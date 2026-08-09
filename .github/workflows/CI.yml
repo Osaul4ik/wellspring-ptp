@@ -164,6 +164,12 @@ jobs:
 
   # ===========================================================================
   # Gate 2: PREfast / Code Analysis (/analyze) - zero-warnings enforced via /WX
+  #
+  # Ця збірка йде з /p:RunCodeAnalysis=true, але кодогенерація від цього не
+  # змінюється (PREfast лише додатковий прохід аналізу поверх звичайного
+  # /c2 codegen) - вихідний .sys ідентичний плейн Release-білду. Тому цей
+  # .sys публікується як артефакт і job `build` нижче забирає його замість
+  # повторної компіляції (було 3 повні білди -> стало 2: CodeQL-трейс і цей).
   # ===========================================================================
   static-analysis:
     name: StaticAnalysis
@@ -237,11 +243,37 @@ jobs:
         if-no-files-found: warn
         path: static-analysis-logs/
 
+    # =====================================================================
+    # Публікуємо вже зібраний .sys - job `build` забере його замість
+    # повторної компіляції.
+    # =====================================================================
+    - name: Locate built .sys
+      run: |
+        $ErrorActionPreference = "Stop"
+        $buildOutDir = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
+        $sysPath     = "$buildOutDir\$env:DRIVER_NAME.sys"
+
+        if (-not (Test-Path $sysPath)) {
+          Write-Error "Built .sys not found at $sysPath after the analysis build."
+          exit 1
+        }
+
+        Write-Host "OK: found $sysPath"
+        Add-Content -Path $env:GITHUB_ENV -Value "SYS_OUT_PATH=$sysPath"
+      shell: pwsh
+
+    - name: Upload built .sys artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: built-driver-sys
+        retention-days: 1
+        path: ${{ env.SYS_OUT_PATH }}
+
 
   # ===========================================================================
-  # Gate 3: Build, stamp, sign and package the driver - only runs if both
-  # quality gates above passed. Produces the same signed archive that
-  # BuildKM_New used to produce on its own.
+  # Gate 3: stamp, sign and package the driver - only runs if both quality
+  # gates above passed. Reuses the .sys built by `static-analysis` instead
+  # of compiling a third time.
   # ===========================================================================
   build:
     name: BuildKM_New
@@ -264,8 +296,8 @@ jobs:
       shell: pwsh
 
     # =====================================================================
-    # Перевірка секретів підпису ДО збірки, щоб не витрачати час
-    # раннера на компіляцію, якщо секрети для test-signing не налаштовані.
+    # Перевірка секретів підпису ДО завантаження артефакту, щоб не
+    # витрачати час раннера, якщо секрети для test-signing не налаштовані.
     # =====================================================================
     - name: Validate signing secrets are present
       run: |
@@ -306,13 +338,15 @@ jobs:
         Add-Content -Path $env:GITHUB_ENV -Value "DRIVER_VERSION=$driverVersion"
       shell: pwsh
 
-    - name: Build USB KM Driver
-      run: |
-        msbuild src/AmtPtpDeviceUsbKm/AmtPtpDeviceUsbKm.vcxproj `
-          /p:Configuration=Release `
-          /p:Platform=x64 `
-          /p:WindowsTargetPlatformVersion=10.0.26100.0
-      shell: pwsh
+    # =====================================================================
+    # Замість повторної компіляції - забираємо .sys, зібраний у job
+    # `static-analysis` (той самий Release/x64, PREfast не змінює codegen).
+    # =====================================================================
+    - name: Download built .sys from static-analysis
+      uses: actions/download-artifact@v4
+      with:
+        name: built-driver-sys
+        path: downloaded-sys
 
     # =====================================================================
     # Готуємо окрему "staging" теку package/, куди кладемо тільки
@@ -322,14 +356,13 @@ jobs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        $buildOutDir = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
-        $sysPath     = "$buildOutDir\$env:DRIVER_NAME.sys"
+        $sysPath     = "downloaded-sys\$env:DRIVER_NAME.sys"
         $infSrcPath  = "$env:PROJECT_DIR\$env:DRIVER_NAME.inf"
         $packageDir  = "package"
 
-        Write-Host "==> Expected .sys path: $sysPath"
+        Write-Host "==> Expected downloaded .sys path: $sysPath"
         if (-not (Test-Path $sysPath)) {
-          Write-Error "Built .sys not found: $sysPath. Check the 'Build USB KM Driver' step."
+          Write-Error "Downloaded .sys not found: $sysPath. Check the 'Download built .sys from static-analysis' step."
           exit 1
         }
         if (-not (Test-Path $infSrcPath)) {
