@@ -21,22 +21,16 @@ env:
 jobs:
 
   # ===========================================================================
-  # Gate 1+2 (merged): CodeQL trace + PREfast/CodeAnalysis in ONE msbuild
-  # invocation.
-  #
-  # `codeql database create --command=...` must itself run a real compile to
-  # trace it - that build is unavoidable. So instead of building a second time
-  # for PREfast, the /p:RunCodeAnalysis=true / EnableCppCoreCheck / WX flags
-  # are baked into the exact command CodeQL traces. One msbuild run produces:
-  #   - the CodeQL database (for mustrun/mustfix analysis)
-  #   - PREfast warnings-as-errors enforcement (build fails on any finding)
-  #   - the actual .sys binary, published as an artifact for the `build` job
-  # This is the ONLY compile in the whole pipeline.
+  # Один job, один раннер, один build. CodeQL трасує єдину компіляцію (з
+  # прапорами PREfast всередині), потім mustrun/mustfix аналіз бази, і якщо
+  # mustfix чистий - той самий .sys, що лежить на диску цього ж раннера,
+  # стемпається/підписується й пакується. Ніякого cache/artifact для
+  # передачі .sys чи WDK-тулів між стадіями - все на одному диску.
   # ===========================================================================
-  codeql:
-    name: CodeQL + StaticAnalysis (single build)
+  ci:
+    name: CodeQL + StaticAnalysis + BuildKM
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
@@ -66,19 +60,6 @@ jobs:
         }
         Write-Host "OK: WDK installer exited with code $exitCode"
       shell: pwsh
-
-    # =====================================================================
-    # Кеш - не installer. `build` не компілює нічого і йому не треба весь
-    # WDK (компілятор/заголовки/либи), лише 3 інструменти для стемпу й
-    # підпису (StampInf/Inf2Cat/signtool), які лежать тут. Кешуємо цю
-    # теку одразу після інсталяції WDK, `build` заресторить її замість
-    # повторного скачування + встановлення повного WDK-інсталятора.
-    # =====================================================================
-    - name: Cache Windows Kits tool binaries for the build job (internal, not an artifact)
-      uses: actions/cache/save@v4
-      with:
-        path: C:\Program Files (x86)\Windows Kits\10\bin
-        key: wdk-tools-${{ github.run_id }}
 
     - name: Download CodeQL CLI
       run: |
@@ -116,8 +97,7 @@ jobs:
     # виклик, а сам виклик вже несе прапори PREfast (/p:RunCodeAnalysis
     # /p:EnableCppCoreCheck /p:CodeAnalysisTreatWarningsAsErrors). Якщо
     # PREfast знайде warning (з /WX) - msbuild впаде з ненульовим кодом,
-    # і `codeql database create` впаде разом з ним - гейт спрацює тут же,
-    # без окремого білда.
+    # і `codeql database create` впаде разом з ним.
     # =====================================================================
     - name: Build CodeQL database (with PREfast /analyze baked in)
       run: |
@@ -189,37 +169,6 @@ jobs:
         Write-Host "OK: 0 Must-Fix defects."
       shell: pwsh
 
-    # =====================================================================
-    # Публікуємо .sys ЛИШЕ ПІСЛЯ блокуючого mustfix.qls-гейту вище (немає
-    # if: always() - тому цей крок і наступний просто не виконаються, якщо
-    # mustfix.qls впав exit 1). Так .sys ніколи не потрапляє в Artifacts,
-    # поки CodeQL Must-Fix не пройшов чисто.
-    # =====================================================================
-    - name: Locate built .sys
-      run: |
-        $ErrorActionPreference = "Stop"
-        $buildOutDir = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
-        $sysPath     = "$buildOutDir\$env:DRIVER_NAME.sys"
-
-        if (-not (Test-Path $sysPath)) {
-          Write-Error "Built .sys not found at $sysPath after the CodeQL-traced build."
-          exit 1
-        }
-
-        Write-Host "OK: found $sysPath"
-        Add-Content -Path $env:GITHUB_ENV -Value "SYS_OUT_PATH=$sysPath"
-      shell: pwsh
-
-    # Кеш замість upload-artifact - .sys не має з'являтись у списку
-    # Artifacts рану, це суто внутрішня передача даних між job'ами.
-    # Ключ прив'язаний до github.run_id, тому кожен run має свій кеш і
-    # вони не змішуються між собою.
-    - name: Cache built .sys for the build job (internal, not an artifact)
-      uses: actions/cache/save@v4
-      with:
-        path: ${{ env.SYS_OUT_PATH }}
-        key: built-sys-${{ github.run_id }}
-
     - name: Upload SARIF results as build artifacts
       if: always()
       uses: actions/upload-artifact@v4
@@ -244,39 +193,15 @@ jobs:
         sarif_file: ${{ env.SARIF_MUSTFIX }}
         category: mustfix
 
-
-  # ===========================================================================
-  # Gate 3: stamp, sign and package the driver - only runs if the merged
-  # CodeQL+StaticAnalysis job above passed. No compilation happens here at
-  # all - the .sys built in `codeql` is downloaded and just packaged.
-  # ===========================================================================
-  build:
-    name: BuildKM_New
-    needs: [ codeql ]
-    runs-on: windows-2022
-    timeout-minutes: 45
-
-    steps:
-    - uses: actions/checkout@v4
+    # =====================================================================
+    # Все, що нижче, виконається лише якщо mustfix.qls вище пройшов чисто
+    # (exit 0) - жоден із цих кроків не має if: always(), тому при
+    # Must-Fix дефекті job зупиняється на кроці вище і сюди не доходить:
+    # ані стемп/підпис не запуститься, ані фінальний артефакт не з'явиться.
+    # =====================================================================
 
     # =====================================================================
-    # Немає компіляції в цьому job'і - msbuild тут не потрібен, тому
-    # `microsoft/setup-msbuild` прибрано. Так само не ставимо WDK з нуля -
-    # тільки ресторимо теку з інструментами (StampInf/Inf2Cat/signtool),
-    # яку `codeql` job уже закешував після своєї (єдиної) інсталяції WDK.
-    # fail-on-cache-miss зупиняє job, якщо кеш раптом не знайдено, замість
-    # мовчазного падіння на наступних кроках з незрозумілою помилкою.
-    # =====================================================================
-    - name: Restore Windows Kits tool binaries from codeql job (internal, not an artifact)
-      uses: actions/cache/restore@v4
-      with:
-        path: C:\Program Files (x86)\Windows Kits\10\bin
-        key: wdk-tools-${{ github.run_id }}
-        fail-on-cache-miss: true
-
-    # =====================================================================
-    # Перевірка секретів підпису ДО завантаження артефакту, щоб не
-    # витрачати час раннера, якщо секрети для test-signing не налаштовані.
+    # Перевірка секретів підпису перед пакуванням.
     # =====================================================================
     - name: Validate signing secrets are present
       run: |
@@ -318,21 +243,8 @@ jobs:
       shell: pwsh
 
     # =====================================================================
-    # Замість компіляції - забираємо .sys, зібраний у job `codeql`
-    # (єдина компіляція всього пайплайна). Кеш, не artifact - .sys не
-    # має світитись у списку Artifacts рану, це внутрішня передача даних
-    # між job'ами. Той самий ключ, що й на Cache Save у job `codeql`.
-    # fail-on-cache-miss зупиняє job, якщо кеш раптом не знайдено -
-    # інакше збірка мовчки продовжила б з порожнім .sys.
-    # =====================================================================
-    - name: Restore built .sys from codeql job (internal, not an artifact)
-      uses: actions/cache/restore@v4
-      with:
-        path: ${{ env.PROJECT_DIR }}\build\${{ env.DRIVER_NAME }}\${{ env.PLATFORM }}\${{ env.CONFIGURATION }}\${{ env.DRIVER_NAME }}.sys
-        key: built-sys-${{ github.run_id }}
-        fail-on-cache-miss: true
-
-    # =====================================================================
+    # .sys уже лежить на диску цього ж раннера (той самий build вище) -
+    # просто беремо його з build-виводу проєкту, без cache/download.
     # Готуємо окрему "staging" теку package/, куди кладемо тільки
     # .sys та .inf, що стосуються AmtPtpDeviceUsbKm.
     # =====================================================================
@@ -340,13 +252,14 @@ jobs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        $sysPath     = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION\$env:DRIVER_NAME.sys"
+        $buildOutDir = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
+        $sysPath     = "$buildOutDir\$env:DRIVER_NAME.sys"
         $infSrcPath  = "$env:PROJECT_DIR\$env:DRIVER_NAME.inf"
         $packageDir  = "package"
 
-        Write-Host "==> Expected restored .sys path: $sysPath"
+        Write-Host "==> Expected .sys path: $sysPath"
         if (-not (Test-Path $sysPath)) {
-          Write-Error "Restored .sys not found: $sysPath. Check the 'Restore built .sys from codeql job' step."
+          Write-Error "Built .sys not found: $sysPath. Check the 'Build CodeQL database' step."
           exit 1
         }
         if (-not (Test-Path $infSrcPath)) {
@@ -368,7 +281,7 @@ jobs:
       shell: pwsh
 
     # =====================================================================
-    # Автопошук StampInf.exe
+    # Автопошук StampInf.exe (WDK вже стоїть на цьому ж раннері)
     # =====================================================================
     - name: Locate StampInf.exe
       run: |
