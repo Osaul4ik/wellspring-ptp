@@ -67,6 +67,19 @@ jobs:
         Write-Host "OK: WDK installer exited with code $exitCode"
       shell: pwsh
 
+    # =====================================================================
+    # Кеш - не installer. `build` не компілює нічого і йому не треба весь
+    # WDK (компілятор/заголовки/либи), лише 3 інструменти для стемпу й
+    # підпису (StampInf/Inf2Cat/signtool), які лежать тут. Кешуємо цю
+    # теку одразу після інсталяції WDK, `build` заресторить її замість
+    # повторного скачування + встановлення повного WDK-інсталятора.
+    # =====================================================================
+    - name: Cache Windows Kits tool binaries for the build job (internal, not an artifact)
+      uses: actions/cache/save@v4
+      with:
+        path: C:\Program Files (x86)\Windows Kits\10\bin
+        key: wdk-tools-${{ github.run_id }}
+
     - name: Download CodeQL CLI
       run: |
         $ErrorActionPreference = "Stop"
@@ -140,32 +153,6 @@ jobs:
         if-no-files-found: warn
         path: static-analysis-logs/
 
-    # =====================================================================
-    # Публікуємо вже зібраний .sys - job `build` забере його й просто
-    # запакує/підпише, без повторної компіляції.
-    # =====================================================================
-    - name: Locate built .sys
-      run: |
-        $ErrorActionPreference = "Stop"
-        $buildOutDir = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
-        $sysPath     = "$buildOutDir\$env:DRIVER_NAME.sys"
-
-        if (-not (Test-Path $sysPath)) {
-          Write-Error "Built .sys not found at $sysPath after the CodeQL-traced build."
-          exit 1
-        }
-
-        Write-Host "OK: found $sysPath"
-        Add-Content -Path $env:GITHUB_ENV -Value "SYS_OUT_PATH=$sysPath"
-      shell: pwsh
-
-    - name: Upload built .sys artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: built-driver-sys
-        retention-days: 1
-        path: ${{ env.SYS_OUT_PATH }}
-
     - name: Analyze with mustrun.qls (informational)
       run: |
         $ErrorActionPreference = "Stop"
@@ -201,6 +188,37 @@ jobs:
         }
         Write-Host "OK: 0 Must-Fix defects."
       shell: pwsh
+
+    # =====================================================================
+    # Публікуємо .sys ЛИШЕ ПІСЛЯ блокуючого mustfix.qls-гейту вище (немає
+    # if: always() - тому цей крок і наступний просто не виконаються, якщо
+    # mustfix.qls впав exit 1). Так .sys ніколи не потрапляє в Artifacts,
+    # поки CodeQL Must-Fix не пройшов чисто.
+    # =====================================================================
+    - name: Locate built .sys
+      run: |
+        $ErrorActionPreference = "Stop"
+        $buildOutDir = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
+        $sysPath     = "$buildOutDir\$env:DRIVER_NAME.sys"
+
+        if (-not (Test-Path $sysPath)) {
+          Write-Error "Built .sys not found at $sysPath after the CodeQL-traced build."
+          exit 1
+        }
+
+        Write-Host "OK: found $sysPath"
+        Add-Content -Path $env:GITHUB_ENV -Value "SYS_OUT_PATH=$sysPath"
+      shell: pwsh
+
+    # Кеш замість upload-artifact - .sys не має з'являтись у списку
+    # Artifacts рану, це суто внутрішня передача даних між job'ами.
+    # Ключ прив'язаний до github.run_id, тому кожен run має свій кеш і
+    # вони не змішуються між собою.
+    - name: Cache built .sys for the build job (internal, not an artifact)
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ env.SYS_OUT_PATH }}
+        key: built-sys-${{ github.run_id }}
 
     - name: Upload SARIF results as build artifacts
       if: always()
@@ -241,16 +259,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v2
-
-    - name: Install WDK
-      run: |
-        $wdkUrl = "https://go.microsoft.com/fwlink/?linkid=2085767"
-        $wdkInstaller = "$env:TEMP\wdksetup.exe"
-        Invoke-WebRequest -Uri $wdkUrl -OutFile $wdkInstaller
-        Start-Process -FilePath $wdkInstaller -ArgumentList "/quiet /norestart" -Wait
-      shell: pwsh
+    # =====================================================================
+    # Немає компіляції в цьому job'і - msbuild тут не потрібен, тому
+    # `microsoft/setup-msbuild` прибрано. Так само не ставимо WDK з нуля -
+    # тільки ресторимо теку з інструментами (StampInf/Inf2Cat/signtool),
+    # яку `codeql` job уже закешував після своєї (єдиної) інсталяції WDK.
+    # fail-on-cache-miss зупиняє job, якщо кеш раптом не знайдено, замість
+    # мовчазного падіння на наступних кроках з незрозумілою помилкою.
+    # =====================================================================
+    - name: Restore Windows Kits tool binaries from codeql job (internal, not an artifact)
+      uses: actions/cache/restore@v4
+      with:
+        path: C:\Program Files (x86)\Windows Kits\10\bin
+        key: wdk-tools-${{ github.run_id }}
+        fail-on-cache-miss: true
 
     # =====================================================================
     # Перевірка секретів підпису ДО завантаження артефакту, щоб не
@@ -297,13 +319,18 @@ jobs:
 
     # =====================================================================
     # Замість компіляції - забираємо .sys, зібраний у job `codeql`
-    # (єдина компіляція всього пайплайна).
+    # (єдина компіляція всього пайплайна). Кеш, не artifact - .sys не
+    # має світитись у списку Artifacts рану, це внутрішня передача даних
+    # між job'ами. Той самий ключ, що й на Cache Save у job `codeql`.
+    # fail-on-cache-miss зупиняє job, якщо кеш раптом не знайдено -
+    # інакше збірка мовчки продовжила б з порожнім .sys.
     # =====================================================================
-    - name: Download built .sys from codeql job
-      uses: actions/download-artifact@v4
+    - name: Restore built .sys from codeql job (internal, not an artifact)
+      uses: actions/cache/restore@v4
       with:
-        name: built-driver-sys
-        path: downloaded-sys
+        path: ${{ env.PROJECT_DIR }}\build\${{ env.DRIVER_NAME }}\${{ env.PLATFORM }}\${{ env.CONFIGURATION }}\${{ env.DRIVER_NAME }}.sys
+        key: built-sys-${{ github.run_id }}
+        fail-on-cache-miss: true
 
     # =====================================================================
     # Готуємо окрему "staging" теку package/, куди кладемо тільки
@@ -313,13 +340,13 @@ jobs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        $sysPath     = "downloaded-sys\$env:DRIVER_NAME.sys"
+        $sysPath     = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION\$env:DRIVER_NAME.sys"
         $infSrcPath  = "$env:PROJECT_DIR\$env:DRIVER_NAME.inf"
         $packageDir  = "package"
 
-        Write-Host "==> Expected downloaded .sys path: $sysPath"
+        Write-Host "==> Expected restored .sys path: $sysPath"
         if (-not (Test-Path $sysPath)) {
-          Write-Error "Downloaded .sys not found: $sysPath. Check the 'Download built .sys from codeql job' step."
+          Write-Error "Restored .sys not found: $sysPath. Check the 'Restore built .sys from codeql job' step."
           exit 1
         }
         if (-not (Test-Path $infSrcPath)) {
