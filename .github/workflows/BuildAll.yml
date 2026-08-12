@@ -25,10 +25,10 @@ env:
 jobs:
 
   # =============================================================================
-  # Job 1: компіляція kernel-mode драйвера (AmtPtpDeviceUsbKm.sys) - незіпсований
-  # тестовий білд, без test-sign сертифіката (для цього є окремі workflow
-  # BuildKM_New.yml / BuildKM+Sym.yml). Мета цього job - швидко перевірити, що
-  # драйвер компілюється, і викласти .sys/.inf/.pdb в артефакти.
+  # Job 1: компіляція kernel-mode драйвера (AmtPtpDeviceUsbKm.sys) і test-sign
+  # підпис .sys/.cat тим самим сертифікатом (SIGN_CERT_PFX/SIGN_CERT_PASSWORD),
+  # що й у BuildKM_New.yml / BuildKM+Sym.yml, - щоб цей workflow теж видавав
+  # готовий до встановлення в Test Mode підписаний пакет (.sys+.inf+.cat+.cer).
   # =============================================================================
   build-driver:
     name: Build Driver (AmtPtpDeviceUsbKm.sys)
@@ -40,6 +40,30 @@ jobs:
 
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v2
+
+    # =====================================================================
+    # Перевірка секретів підпису ДО збірки, щоб не витрачати час
+    # раннера на компіляцію, якщо секрети для test-signing не налаштовані.
+    # =====================================================================
+    - name: Validate signing secrets are present
+      run: |
+        $ErrorActionPreference = "Stop"
+        Write-Host "==> Checking SIGN_CERT_PFX / SIGN_CERT_PASSWORD secrets"
+
+        if ([string]::IsNullOrWhiteSpace($env:SIGN_CERT_PFX)) {
+          Write-Error "Secret SIGN_CERT_PFX is not set in GitHub Secrets. Add the Base64-encoded PFX certificate in Settings -> Secrets and variables -> Actions."
+          exit 1
+        }
+        if ([string]::IsNullOrWhiteSpace($env:SIGN_CERT_PASSWORD)) {
+          Write-Error "Secret SIGN_CERT_PASSWORD is not set in GitHub Secrets."
+          exit 1
+        }
+
+        Write-Host "OK: both secrets are present."
+      shell: pwsh
+      env:
+        SIGN_CERT_PFX: ${{ secrets.CERT }}
+        SIGN_CERT_PASSWORD: ${{ secrets.CERT_PWD }}
 
     - name: Install WDK
       run: |
@@ -87,9 +111,6 @@ jobs:
     # =====================================================================
     # Стемпаємо .inf (дата/версія/архітектура) тим самим StampInf, що й
     # інші workflow, - без цього WDK/Inf2Cat/PnP не приймуть INF як валідний.
-    # Підпису тут немає навмисно (немає test-sign сертифіката в цьому job) -
-    # це просто "чи компілюється" перевірка з готовим для встановлення в
-    # Test Mode пакетом (.sys+.inf, без .cat/.cer).
     # =====================================================================
     - name: Locate StampInf.exe
       run: |
@@ -149,7 +170,124 @@ jobs:
 
         Write-Host "OK: staged driver files:"
         Get-ChildItem $packageDir | ForEach-Object { Write-Host "  - $($_.Name)" }
+
+        Add-Content -Path $env:GITHUB_ENV -Value "PACKAGE_DIR=$packageDir"
+        Add-Content -Path $env:GITHUB_ENV -Value "SYS_PATH=$packageDir\$env:DRIVER_NAME.sys"
+        Add-Content -Path $env:GITHUB_ENV -Value "INF_PATH=$packageDir\$env:DRIVER_NAME.inf"
+        Add-Content -Path $env:GITHUB_ENV -Value "CAT_PATH=$packageDir\$env:DRIVER_NAME.cat"
       shell: pwsh
+
+    # =====================================================================
+    # Автопошук Inf2Cat.exe
+    # =====================================================================
+    - name: Locate Inf2Cat.exe
+      run: |
+        $ErrorActionPreference = "Stop"
+        $roots = @(
+          "C:\Program Files (x86)\Windows Kits\10\bin",
+          "C:\Program Files\Windows Kits\10\bin"
+        )
+        $candidates = foreach ($root in $roots) {
+          if (Test-Path $root) {
+            Get-ChildItem -Path $root -Filter "Inf2Cat.exe" -Recurse -ErrorAction SilentlyContinue
+          }
+        }
+        if (-not $candidates) {
+          Write-Error "Inf2Cat.exe was not found on this runner."
+          exit 1
+        }
+        $tool = $candidates | Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $tool) { $tool = $candidates | Sort-Object FullName -Descending | Select-Object -First 1 }
+        Add-Content -Path $env:GITHUB_ENV -Value "INF2CAT_PATH=$($tool.FullName)"
+      shell: pwsh
+
+    # =====================================================================
+    # Генерація .cat файлу з .inf через Inf2Cat.
+    # =====================================================================
+    - name: Generate CAT file (Inf2Cat)
+      run: |
+        $ErrorActionPreference = "Stop"
+        $fullPackageDir = (Resolve-Path $env:PACKAGE_DIR).Path
+        & "$env:INF2CAT_PATH" /driver:"$fullPackageDir" /os:10_X64 /verbose
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Inf2Cat exited with error code $LASTEXITCODE."
+          exit 1
+        }
+        if (-not (Test-Path $env:CAT_PATH)) {
+          Write-Error "Inf2Cat did not report an error, but no .cat file was produced at $env:CAT_PATH."
+          exit 1
+        }
+        Write-Host "OK: .cat generated -> $env:CAT_PATH"
+      shell: pwsh
+
+    # =====================================================================
+    # Автопошук signtool.exe
+    # =====================================================================
+    - name: Locate signtool.exe
+      run: |
+        $ErrorActionPreference = "Stop"
+        $roots = @(
+          "C:\Program Files (x86)\Windows Kits\10\bin",
+          "C:\Program Files\Windows Kits\10\bin"
+        )
+        $candidates = foreach ($root in $roots) {
+          if (Test-Path $root) {
+            Get-ChildItem -Path $root -Filter "signtool.exe" -Recurse -ErrorAction SilentlyContinue
+          }
+        }
+        if (-not $candidates) {
+          Write-Error "signtool.exe was not found on this runner."
+          exit 1
+        }
+        $tool = $candidates | Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $tool) { $tool = $candidates | Sort-Object FullName -Descending | Select-Object -First 1 }
+        Add-Content -Path $env:GITHUB_ENV -Value "SIGNTOOL_PATH=$($tool.FullName)"
+      shell: pwsh
+
+    # =====================================================================
+    # Декодування PFX із секрету, підпис .sys і .cat, експорт публічного
+    # сертифіката (.cer) для встановлення довіри на цільових машинах.
+    # =====================================================================
+    - name: Sign .sys and .cat with SignTool
+      run: |
+        $ErrorActionPreference = "Stop"
+        $pfxPath = Join-Path $env:TEMP "signcert.pfx"
+        $cerPath = Join-Path $env:PACKAGE_DIR "$env:DRIVER_NAME.cer"
+
+        try {
+          Write-Host "==> Decoding SIGN_CERT_PFX into a temporary file"
+          $bytes = [Convert]::FromBase64String($env:SIGN_CERT_PFX)
+          [IO.File]::WriteAllBytes($pfxPath, $bytes)
+
+          Write-Host "==> Signing $env:SYS_PATH"
+          & "$env:SIGNTOOL_PATH" sign /v /fd SHA256 /f "$pfxPath" /p "$env:SIGN_CERT_PASSWORD" `
+            /tr http://timestamp.digicert.com /td SHA256 "$env:SYS_PATH"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Signing .sys failed (exit code $LASTEXITCODE)."; exit 1 }
+
+          Write-Host "==> Signing $env:CAT_PATH"
+          & "$env:SIGNTOOL_PATH" sign /v /fd SHA256 /f "$pfxPath" /p "$env:SIGN_CERT_PASSWORD" `
+            /tr http://timestamp.digicert.com /td SHA256 "$env:CAT_PATH"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Signing .cat failed (exit code $LASTEXITCODE)."; exit 1 }
+
+          Write-Host "==> Exporting public certificate for target-machine trust -> $cerPath"
+          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+            $pfxPath, $env:SIGN_CERT_PASSWORD,
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+          )
+          Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
+
+          Write-Host "OK: .sys and .cat signed; .cer exported."
+        }
+        finally {
+          if (Test-Path $pfxPath) {
+            Write-Host "==> Removing temporary .pfx"
+            Remove-Item -Path $pfxPath -Force
+          }
+        }
+      shell: pwsh
+      env:
+        SIGN_CERT_PFX: ${{ secrets.CERT }}
+        SIGN_CERT_PASSWORD: ${{ secrets.CERT_PWD }}
 
     - name: Upload driver artifact
       uses: actions/upload-artifact@v4
