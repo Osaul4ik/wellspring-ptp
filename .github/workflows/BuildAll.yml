@@ -1,0 +1,242 @@
+name: BuildAll (Driver + ConfigGui)
+
+on:
+  push:
+    branches: [ master, TestHID ]
+  pull_request:
+    branches: [ master, TestHID ]
+  workflow_dispatch:
+
+concurrency:
+  group: build-all-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # ---- Драйвер ----
+  PROJECT_DIR: src/AmtPtpDeviceUsbKm
+  DRIVER_NAME: AmtPtpDeviceUsbKm
+  CONFIGURATION: Release
+  PLATFORM: x64
+  # ---- GUI ----
+  GUI_PROJECT_DIR: src/AmtPtpConfigGui
+  GUI_PROJECT_NAME: AmtPtpConfigGui
+
+jobs:
+
+  # =============================================================================
+  # Job 1: компіляція kernel-mode драйвера (AmtPtpDeviceUsbKm.sys) - незіпсований
+  # тестовий білд, без test-sign сертифіката (для цього є окремі workflow
+  # BuildKM_New.yml / BuildKM+Sym.yml). Мета цього job - швидко перевірити, що
+  # драйвер компілюється, і викласти .sys/.inf/.pdb в артефакти.
+  # =============================================================================
+  build-driver:
+    name: Build Driver (AmtPtpDeviceUsbKm.sys)
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Install WDK
+      run: |
+        $ErrorActionPreference = "Stop"
+        $wdkUrl = "https://go.microsoft.com/fwlink/?linkid=2085767"
+        $wdkInstaller = "$env:TEMP\wdksetup.exe"
+        Invoke-WebRequest -Uri $wdkUrl -OutFile $wdkInstaller
+        $proc = Start-Process -FilePath $wdkInstaller -ArgumentList "/quiet /norestart" -Wait -PassThru
+        $exitCode = $proc.ExitCode
+        if ($exitCode -ne 0 -and $exitCode -ne 3010) {
+          Write-Error "WDK installer exited with code $exitCode"
+          exit 1
+        }
+        Write-Host "OK: WDK installer exited with code $exitCode"
+      shell: pwsh
+
+    # =====================================================================
+    # Обчислення версії/дати драйвера на основі поточної дати й часу, як в
+    # інших workflow цього репозиторію - для узгодженого нейминга артефактів.
+    # =====================================================================
+    - name: Compute driver version and date
+      run: |
+        $ErrorActionPreference = "Stop"
+        $now = Get-Date
+
+        $driverDate    = $now.ToString("MM/dd/yyyy")
+        $driverVersion = "1.$($now.Year).$($now.ToString('MMdd')).$($now.ToString('HHmm'))"
+
+        Write-Host "==> Driver date (DriverVer date): $driverDate"
+        Write-Host "==> Driver version (DriverVer ver): $driverVersion"
+
+        Add-Content -Path $env:GITHUB_ENV -Value "DRIVER_DATE=$driverDate"
+        Add-Content -Path $env:GITHUB_ENV -Value "DRIVER_VERSION=$driverVersion"
+      shell: pwsh
+
+    - name: Build USB KM Driver
+      run: |
+        msbuild "$env:PROJECT_DIR\$env:DRIVER_NAME.vcxproj" `
+          /p:Configuration=$env:CONFIGURATION `
+          /p:Platform=$env:PLATFORM `
+          /p:WindowsTargetPlatformVersion=10.0.26100.0 `
+          /nologo /verbosity:minimal /clp:Summary
+      shell: pwsh
+
+    # =====================================================================
+    # Стемпаємо .inf (дата/версія/архітектура) тим самим StampInf, що й
+    # інші workflow, - без цього WDK/Inf2Cat/PnP не приймуть INF як валідний.
+    # Підпису тут немає навмисно (немає test-sign сертифіката в цьому job) -
+    # це просто "чи компілюється" перевірка з готовим для встановлення в
+    # Test Mode пакетом (.sys+.inf, без .cat/.cer).
+    # =====================================================================
+    - name: Locate StampInf.exe
+      run: |
+        $ErrorActionPreference = "Stop"
+        $roots = @(
+          "C:\Program Files (x86)\Windows Kits\10\bin",
+          "C:\Program Files\Windows Kits\10\bin"
+        )
+        $candidates = foreach ($root in $roots) {
+          if (Test-Path $root) {
+            Get-ChildItem -Path $root -Filter "StampInf.exe" -Recurse -ErrorAction SilentlyContinue
+          }
+        }
+        if (-not $candidates) {
+          Write-Error "StampInf.exe was not found on this runner."
+          exit 1
+        }
+        $tool = $candidates | Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $tool) { $tool = $candidates | Sort-Object FullName -Descending | Select-Object -First 1 }
+        Add-Content -Path $env:GITHUB_ENV -Value "STAMPINF_PATH=$($tool.FullName)"
+      shell: pwsh
+
+    - name: Prepare driver package folder
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $buildOutDir = "$env:PROJECT_DIR\build\$env:DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
+        $sysPath     = "$buildOutDir\$env:DRIVER_NAME.sys"
+        $pdbPath     = "$buildOutDir\$env:DRIVER_NAME.pdb"
+        $infSrcPath  = "$env:PROJECT_DIR\$env:DRIVER_NAME.inf"
+        $packageDir  = "artifacts\driver"
+
+        if (-not (Test-Path $sysPath)) {
+          Write-Error "Built .sys not found: $sysPath"
+          exit 1
+        }
+        if (-not (Test-Path $infSrcPath)) {
+          Write-Error ".inf file not found: $infSrcPath"
+          exit 1
+        }
+
+        New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+        Copy-Item -Path $sysPath -Destination $packageDir -Force
+        Copy-Item -Path $infSrcPath -Destination $packageDir -Force
+        if (Test-Path $pdbPath) {
+          Copy-Item -Path $pdbPath -Destination $packageDir -Force
+        }
+        Copy-Item -Path "src\InstallCert.bat" -Destination $packageDir -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path "src\TestMode.bat" -Destination $packageDir -Force -ErrorAction SilentlyContinue
+
+        $infPath = Join-Path $packageDir "$env:DRIVER_NAME.inf"
+        & "$env:STAMPINF_PATH" -f "$infPath" -a amd64 -d "$env:DRIVER_DATE" -v "$env:DRIVER_VERSION" -k 1.33
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "StampInf exited with error code $LASTEXITCODE."
+          exit 1
+        }
+
+        Write-Host "OK: staged driver files:"
+        Get-ChildItem $packageDir | ForEach-Object { Write-Host "  - $($_.Name)" }
+      shell: pwsh
+
+    - name: Upload driver artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AmtPtpDeviceUsbKm-${{ env.DRIVER_VERSION }}
+        path: artifacts/driver
+        if-no-files-found: error
+
+  # =============================================================================
+  # Job 2: компіляція AmtPtpConfigGui (WPF, .NET) - GUI-панель на кшталт
+  # Elan Control Panel для налаштування palm rejection. Незалежний job -
+  # чисто керований середовищем .NET SDK, не потребує WDK/MSBuild-нативного
+  # тулчейну, тож збирається окремо й паралельно з драйвером.
+  # =============================================================================
+  build-gui:
+    name: Build ConfigGui (AmtPtpConfigGui.exe)
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore
+      run: dotnet restore "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj"
+      shell: pwsh
+
+    - name: Publish (self-contained, single file, win-x64)
+      run: |
+        dotnet publish "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj" `
+          -c Release `
+          -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -o artifacts/gui
+      shell: pwsh
+
+    - name: Upload GUI artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AmtPtpConfigGui-${{ github.sha }}
+        path: artifacts/gui
+        if-no-files-found: error
+
+  # =============================================================================
+  # Job 3: об'єднаний пакет - .sys/.inf драйвера разом з GUI в одному архіві,
+  # щоб користувач міг завантажити один артефакт і отримати все необхідне для
+  # тестового встановлення (Test Mode) + панель керування налаштуваннями.
+  # Запускається тільки якщо обидва попередні job успішні.
+  # =============================================================================
+  package-combined:
+    name: Package combined artifact
+    needs: [ build-driver, build-gui ]
+    runs-on: windows-2022
+    timeout-minutes: 10
+
+    steps:
+    - name: Download driver artifact
+      uses: actions/download-artifact@v4
+      with:
+        pattern: AmtPtpDeviceUsbKm-*
+        path: combined/driver
+        merge-multiple: true
+
+    - name: Download GUI artifact
+      uses: actions/download-artifact@v4
+      with:
+        pattern: AmtPtpConfigGui-*
+        path: combined/gui
+        merge-multiple: true
+
+    - name: List combined contents
+      run: |
+        Write-Host "== driver =="
+        Get-ChildItem -Recurse combined/driver | Select-Object -ExpandProperty FullName
+        Write-Host "== gui =="
+        Get-ChildItem -Recurse combined/gui | Select-Object -ExpandProperty FullName
+      shell: pwsh
+
+    - name: Upload combined artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: WellspringPTP-Full-${{ github.sha }}
+        path: combined
+        if-no-files-found: error
