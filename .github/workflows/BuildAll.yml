@@ -319,6 +319,40 @@ jobs:
       run: dotnet restore "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj"
       shell: pwsh
 
+    # =====================================================================
+    # Primary artifact: framework-dependent single file, win-x64.
+    # Requires the target machine to have the .NET 8 Desktop Runtime
+    # installed (small, common redistributable), but the exe itself is
+    # only ~1-2 MB instead of 150+ MB, since it no longer bundles a
+    # private copy of the CLR + WPF native runtime + ICU data.
+    # This is what most users should download.
+    # =====================================================================
+    - name: Publish (framework-dependent, single file, win-x64)
+      run: |
+        dotnet publish "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj" `
+          -c Release `
+          -r win-x64 `
+          --self-contained false `
+          -p:PublishSingleFile=true `
+          -o artifacts/gui
+      shell: pwsh
+
+    - name: Upload GUI artifact (framework-dependent)
+      uses: actions/upload-artifact@v4
+      with:
+        name: AmtPtpConfigGui-${{ github.sha }}
+        path: artifacts/gui
+
+    # =====================================================================
+    # Secondary artifact: self-contained single file, win-x64, for users who
+    # don't want to install the .NET 8 Desktop Runtime separately. This is
+    # inherently large (embeds the whole runtime), but the csproj's
+    # SatelliteResourceLanguages/InvariantGlobalization/DebugType/
+    # PublishReadyToRun settings plus EnableCompressionInSingleFile here cut
+    # it down substantially from the previous ~150+ MB, mostly by dropping
+    # ~30 unused satellite-language resource DLLs and the ICU globalization
+    # data, and deflating what's left inside the single exe.
+    # =====================================================================
     - name: Publish (self-contained, single file, win-x64)
       run: |
         dotnet publish "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj" `
@@ -327,14 +361,15 @@ jobs:
           --self-contained true `
           -p:PublishSingleFile=true `
           -p:IncludeNativeLibrariesForSelfExtract=true `
-          -o artifacts/gui
+          -p:EnableCompressionInSingleFile=true `
+          -o artifacts/gui-standalone
       shell: pwsh
 
-    - name: Upload GUI artifact
+    - name: Upload GUI artifact (self-contained)
       uses: actions/upload-artifact@v4
       with:
-        name: AmtPtpConfigGui-${{ github.sha }}
-        path: artifacts/gui
+        name: AmtPtpConfigGui-standalone-${{ github.sha }}
+        path: artifacts/gui-standalone
         if-no-files-found: error
 
   # =============================================================================
@@ -357,19 +392,31 @@ jobs:
         path: combined/driver
         merge-multiple: true
 
-    - name: Download GUI artifact
+    # Two separate GUI artifacts now exist (framework-dependent "small" build
+    # and self-contained "standalone" build). Both publish an exe with the
+    # same file name, so they must land in separate subfolders - a single
+    # "AmtPtpConfigGui-*" pattern with merge-multiple would match both names
+    # and silently overwrite one exe with the other in the combined package.
+    - name: Download GUI artifact (framework-dependent)
       uses: actions/download-artifact@v4
       with:
-        pattern: AmtPtpConfigGui-*
+        name: AmtPtpConfigGui-${{ github.sha }}
         path: combined/gui
-        merge-multiple: true
+
+    - name: Download GUI artifact (self-contained)
+      uses: actions/download-artifact@v4
+      with:
+        name: AmtPtpConfigGui-standalone-${{ github.sha }}
+        path: combined/gui-standalone
 
     - name: List combined contents
       run: |
         Write-Host "== driver =="
         Get-ChildItem -Recurse combined/driver | Select-Object -ExpandProperty FullName
-        Write-Host "== gui =="
+        Write-Host "== gui (framework-dependent) =="
         Get-ChildItem -Recurse combined/gui | Select-Object -ExpandProperty FullName
+        Write-Host "== gui-standalone (self-contained) =="
+        Get-ChildItem -Recurse combined/gui-standalone | Select-Object -ExpandProperty FullName
       shell: pwsh
 
     - name: Upload combined artifact
