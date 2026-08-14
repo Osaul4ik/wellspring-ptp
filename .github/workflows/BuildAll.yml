@@ -25,17 +25,27 @@ env:
 jobs:
 
   # =============================================================================
-  # Job 1: компіляція kernel-mode драйвера (AmtPtpDeviceUsbKm.sys) і test-sign
-  # підпис .sys/.cat тим самим сертифікатом (SIGN_CERT_PFX/SIGN_CERT_PASSWORD),
-  # що й у BuildKM_New.yml / BuildKM+Sym.yml, - щоб цей workflow теж видавав
-  # готовий до встановлення в Test Mode підписаний пакет (.sys+.inf+.cat+.cer).
+  # Єдиний job: драйвер + GUI + пакування збираються послідовно в одному
+  # раннері. Це зроблено навмисно, щоб НЕ плодити проміжні upload-artifact
+  # (driver / gui / gui-standalone) - GitHub показує в списку артефактів
+  # запуску буквально все, що було завантажено через upload-artifact, тож
+  # єдиний спосіб мати в результаті рівно два артефакти - взагалі не
+  # завантажувати проміжні файли, а передавати їх між кроками просто через
+  # файлову систему раннера.
+  #
+  # У кінці завантажуються ТІЛЬКИ два фінальні артефакти:
+  #   - WellspringPTP-Min-<version>   (Driver + GUI framework-dependent, без
+  #     вбудованого .NET runtime)
+  #   - WellspringPTP-Full-<version>  (Driver + GUI self-contained)
+  # Кожен з них - це папка WellspringPTP/{Driver,Gui}, яку upload-artifact
+  # архівує РІВНО ОДИН РАЗ під час завантаження (без ручного zip кроку) -
+  # тому при скачуванні з UI користувач отримує один .zip з папкою
+  # WellspringPTP всередині, а не архів-в-архіві.
   # =============================================================================
-  build-driver:
-    name: Build Driver (AmtPtpDeviceUsbKm.sys)
+  build-and-package:
+    name: Build Driver + GUI, package archives
     runs-on: windows-2022
-    timeout-minutes: 45
-    outputs:
-      driver_version: ${{ steps.driverver.outputs.driver_version }}
+    timeout-minutes: 60
 
     steps:
     - uses: actions/checkout@v4
@@ -87,7 +97,6 @@ jobs:
     # інших workflow цього репозиторію - для узгодженого нейминга артефактів.
     # =====================================================================
     - name: Compute driver version and date
-      id: driverver
       run: |
         $ErrorActionPreference = "Stop"
         $now = Get-Date
@@ -100,7 +109,6 @@ jobs:
 
         Add-Content -Path $env:GITHUB_ENV -Value "DRIVER_DATE=$driverDate"
         Add-Content -Path $env:GITHUB_ENV -Value "DRIVER_VERSION=$driverVersion"
-        Add-Content -Path $env:GITHUB_OUTPUT -Value "driver_version=$driverVersion"
       shell: pwsh
 
     - name: Build USB KM Driver
@@ -293,71 +301,37 @@ jobs:
         SIGN_CERT_PFX: ${{ secrets.CERT }}
         SIGN_CERT_PASSWORD: ${{ secrets.CERT_PWD }}
 
-    - name: Upload driver artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: AmtPtpDeviceUsbKm-${{ env.DRIVER_VERSION }}
-        path: artifacts/driver
-        if-no-files-found: error
-
-  # =============================================================================
-  # Job 2: компіляція AmtPtpConfigGui (WPF, .NET) - GUI-панель на кшталт
-  # Elan Control Panel для налаштування palm rejection. Незалежний job -
-  # чисто керований середовищем .NET SDK, не потребує WDK/MSBuild-нативного
-  # тулчейну, тож збирається окремо й паралельно з драйвером.
-  # =============================================================================
-  build-gui:
-    name: Build ConfigGui (AmtPtpConfigGui.exe)
-    runs-on: windows-2022
-    timeout-minutes: 30
-
-    steps:
-    - uses: actions/checkout@v4
-
+    # =====================================================================
+    # GUI: .NET SDK, restore, дві публікації (framework-dependent і
+    # self-contained). Драйвер уже зібраний і підписаний вище в цьому ж
+    # job, тому WDK/MSBuild-тулчейн і .NET SDK просто співіснують на одному
+    # раннері - окремий job тут не потрібен.
+    # =====================================================================
     - name: Setup .NET SDK
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
 
-    - name: Restore
+    - name: Restore GUI project
       run: dotnet restore "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj"
       shell: pwsh
 
-    # =====================================================================
-    # Primary artifact: framework-dependent single file, win-x64.
-    # Requires the target machine to have the .NET 8 Desktop Runtime
-    # installed (small, common redistributable), but the exe itself is
-    # only ~1-2 MB instead of 150+ MB, since it no longer bundles a
-    # private copy of the CLR + WPF native runtime + ICU data.
-    # This is what most users should download.
-    # =====================================================================
-    - name: Publish (framework-dependent, single file, win-x64)
+    # Framework-dependent single file, win-x64: exe важить одиниці МБ, але
+    # потребує встановленого на цільовій машині .NET 8 Desktop Runtime.
+    # Це те, що йде в "Min" архів.
+    - name: Publish GUI (framework-dependent, single file, win-x64)
       run: |
         dotnet publish "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj" `
           -c Release `
           -r win-x64 `
           --self-contained false `
           -p:PublishSingleFile=true `
-          -o artifacts/gui
+          -o artifacts/gui-min
       shell: pwsh
 
-    - name: Upload GUI artifact (framework-dependent)
-      uses: actions/upload-artifact@v4
-      with:
-        name: AmtPtpConfigGui-${{ github.sha }}
-        path: artifacts/gui
-
-    # =====================================================================
-    # Secondary artifact: self-contained single file, win-x64, for users who
-    # don't want to install the .NET 8 Desktop Runtime separately. This is
-    # inherently large (embeds the whole runtime), but the csproj's
-    # SatelliteResourceLanguages/InvariantGlobalization/DebugType/
-    # PublishReadyToRun settings plus EnableCompressionInSingleFile here cut
-    # it down substantially from the previous ~150+ MB, mostly by dropping
-    # ~30 unused satellite-language resource DLLs and the ICU globalization
-    # data, and deflating what's left inside the single exe.
-    # =====================================================================
-    - name: Publish (self-contained, single file, win-x64)
+    # Self-contained single file, win-x64: важчий exe (вбудований CLR/WPF),
+    # зате нічого встановлювати додатково не треба. Йде в "Full" архів.
+    - name: Publish GUI (self-contained, single file, win-x64)
       run: |
         dotnet publish "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj" `
           -c Release `
@@ -366,114 +340,48 @@ jobs:
           -p:PublishSingleFile=true `
           -p:IncludeNativeLibrariesForSelfExtract=true `
           -p:EnableCompressionInSingleFile=true `
-          -o artifacts/gui-standalone
+          -o artifacts/gui-full
       shell: pwsh
 
-    - name: Upload GUI artifact (self-contained)
+    # =====================================================================
+    # Формуємо однакову структуру WellspringPTP/Driver + WellspringPTP/Gui
+    # для обох варіантів. upload-artifact нижче заархівує кожну з цих
+    # папок РІВНО ОДИН РАЗ - без ручного zip, тому нема архіву-в-архіві.
+    # =====================================================================
+    - name: Stage folder structure (WellspringPTP/Driver + WellspringPTP/Gui)
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        New-Item -ItemType Directory -Path "stage/min/WellspringPTP/Driver"  -Force | Out-Null
+        New-Item -ItemType Directory -Path "stage/min/WellspringPTP/Gui"     -Force | Out-Null
+        New-Item -ItemType Directory -Path "stage/full/WellspringPTP/Driver" -Force | Out-Null
+        New-Item -ItemType Directory -Path "stage/full/WellspringPTP/Gui"    -Force | Out-Null
+
+        Copy-Item -Path "artifacts/driver/*"   -Destination "stage/min/WellspringPTP/Driver"  -Recurse -Force
+        Copy-Item -Path "artifacts/driver/*"   -Destination "stage/full/WellspringPTP/Driver" -Recurse -Force
+
+        Copy-Item -Path "artifacts/gui-min/*"  -Destination "stage/min/WellspringPTP/Gui"  -Recurse -Force
+        Copy-Item -Path "artifacts/gui-full/*" -Destination "stage/full/WellspringPTP/Gui" -Recurse -Force
+
+        Write-Host "== stage/min =="
+        Get-ChildItem -Recurse "stage/min" | Select-Object -ExpandProperty FullName
+        Write-Host "== stage/full =="
+        Get-ChildItem -Recurse "stage/full" | Select-Object -ExpandProperty FullName
+      shell: pwsh
+
+    # path вказує на батьківську теку stage/min - тоді у корені завантаженого
+    # артефакту буде саме папка WellspringPTP (а не її вміст напряму), як і
+    # вимагалось: в архіві -> WellspringPTP -> Driver, Gui.
+    - name: Upload Min archive (Driver + GUI without bundled .NET)
       uses: actions/upload-artifact@v4
       with:
-        name: AmtPtpConfigGui-standalone-${{ github.sha }}
-        path: artifacts/gui-standalone
+        name: WellspringPTP-Min-${{ env.DRIVER_VERSION }}
+        path: stage/min
         if-no-files-found: error
 
-  # =============================================================================
-  # Job 3: пакування у два готові до розповсюдження ZIP-архіви. Обидва мають
-  # однакову структуру - папка WellspringPTP/, а в ній Driver/ та Gui/ - і
-  # відрізняються лише збіркою GUI, що лежить у Gui/:
-  #   - WellspringPTP-Min   -> Driver + GUI (framework-dependent, БЕЗ
-  #     вбудованого .NET runtime; потребує встановленого .NET 8 Desktop
-  #     Runtime на цільовій машині, зате exe важить одиниці МБ)
-  #   - WellspringPTP-Full  -> Driver + GUI (self-contained, з вбудованим
-  #     .NET runtime; нічого додатково встановлювати не треба)
-  # Кожен архів завантажується як ОКРЕМИЙ артефакт workflow, тобто в списку
-  # артефактів запуску завжди рівно два готові .zip-файли.
-  # Запускається тільки якщо обидва попередні job успішні.
-  # =============================================================================
-  package-archives:
-    name: Package archives (Min + Full)
-    needs: [ build-driver, build-gui ]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    env:
-      DRIVER_VERSION: ${{ needs.build-driver.outputs.driver_version }}
-
-    steps:
-    - name: Download driver artifact
-      uses: actions/download-artifact@v4
-      with:
-        pattern: AmtPtpDeviceUsbKm-*
-        path: src/driver
-        merge-multiple: true
-
-    # Дві окремі GUI-збірки (framework-dependent "min" і self-contained
-    # "full") публікують exe з однаковим ім'ям, тому завантажуємо їх у різні
-    # тимчасові підпапки, щоб одна не затерла іншу.
-    - name: Download GUI artifact (framework-dependent, for Min)
-      uses: actions/download-artifact@v4
-      with:
-        name: AmtPtpConfigGui-${{ github.sha }}
-        path: src/gui-min
-
-    - name: Download GUI artifact (self-contained, for Full)
-      uses: actions/download-artifact@v4
-      with:
-        name: AmtPtpConfigGui-standalone-${{ github.sha }}
-        path: src/gui-full
-
-    # =====================================================================
-    # Формуємо однакову структуру папок WellspringPTP/Driver + /Gui
-    # для обох варіантів пакування, після чого стискаємо кожну окремо в
-    # свій ZIP-архів.
-    # =====================================================================
-    - name: Stage folder structure
-      run: |
-        set -euo pipefail
-
-        mkdir -p stage/min/WellspringPTP/Driver stage/min/WellspringPTP/Gui
-        mkdir -p stage/full/WellspringPTP/Driver stage/full/WellspringPTP/Gui
-
-        cp -r src/driver/. stage/min/WellspringPTP/Driver/
-        cp -r src/driver/. stage/full/WellspringPTP/Driver/
-
-        cp -r src/gui-min/. stage/min/WellspringPTP/Gui/
-        cp -r src/gui-full/. stage/full/WellspringPTP/Gui/
-
-        echo "== min =="
-        find stage/min -type f
-        echo "== full =="
-        find stage/full -type f
-      shell: bash
-
-    - name: Compute archive names
-      id: names
-      run: |
-        VER="${DRIVER_VERSION:-${GITHUB_SHA::7}}"
-        echo "ver=$VER" >> "$GITHUB_OUTPUT"
-      shell: bash
-
-    - name: Create Min archive (Driver + GUI without bundled .NET)
-      run: |
-        cd stage/min
-        zip -r -9 "../../WellspringPTP-Min-${{ steps.names.outputs.ver }}.zip" WellspringPTP
-      shell: bash
-
-    - name: Create Full archive (Driver + GUI, self-contained)
-      run: |
-        cd stage/full
-        zip -r -9 "../../WellspringPTP-Full-${{ steps.names.outputs.ver }}.zip" WellspringPTP
-      shell: bash
-
-    - name: Upload Min archive
+    - name: Upload Full archive (Driver + GUI, self-contained)
       uses: actions/upload-artifact@v4
       with:
-        name: WellspringPTP-Min-${{ steps.names.outputs.ver }}
-        path: WellspringPTP-Min-${{ steps.names.outputs.ver }}.zip
-        if-no-files-found: error
-
-    - name: Upload Full archive
-      uses: actions/upload-artifact@v4
-      with:
-        name: WellspringPTP-Full-${{ steps.names.outputs.ver }}
-        path: WellspringPTP-Full-${{ steps.names.outputs.ver }}.zip
+        name: WellspringPTP-Full-${{ env.DRIVER_VERSION }}
+        path: stage/full
         if-no-files-found: error
