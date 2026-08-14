@@ -1,0 +1,128 @@
+name: BuildGui (ConfigGui only)
+
+on:
+  push:
+    branches: [ master, TestHID ]
+  pull_request:
+    branches: [ master, TestHID ]
+  workflow_dispatch:
+
+concurrency:
+  group: build-gui-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # ---- GUI ----
+  GUI_PROJECT_DIR: src/AmtPtpConfigGui
+  GUI_PROJECT_NAME: AmtPtpConfigGui
+
+jobs:
+
+  # =============================================================================
+  # Тільки GUI: build + package. Драйвер, WDK, підпис і генерація .cat тут
+  # не потрібні - весь відповідний блок з BuildAll.yml вирізаний.
+  # Завантажуються два фінальні артефакти:
+  #   - WellspringPTP-Gui-Min-<version>   (framework-dependent, без .NET runtime)
+  #   - WellspringPTP-Gui-Full-<version>  (self-contained)
+  # =============================================================================
+  build-and-package:
+    name: Build GUI, package archives
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # =====================================================================
+    # Обчислення версії/дати - той самий формат, що й у BuildAll.yml, для
+    # узгодженого нейминга артефактів.
+    # =====================================================================
+    - name: Compute build version and date
+      run: |
+        $ErrorActionPreference = "Stop"
+        $now = Get-Date
+
+        $buildDate    = $now.ToString("MM/dd/yyyy")
+        $buildVersion = "1.$($now.Year).$($now.ToString('MMdd')).$($now.ToString('HHmm'))"
+
+        Write-Host "==> Build date: $buildDate"
+        Write-Host "==> Build version: $buildVersion"
+
+        Add-Content -Path $env:GITHUB_ENV -Value "BUILD_DATE=$buildDate"
+        Add-Content -Path $env:GITHUB_ENV -Value "BUILD_VERSION=$buildVersion"
+      shell: pwsh
+
+    # =====================================================================
+    # GUI: .NET SDK, restore, дві публікації (framework-dependent і
+    # self-contained).
+    # =====================================================================
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore GUI project
+      run: dotnet restore "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj"
+      shell: pwsh
+
+    # Framework-dependent single file, win-x64: exe важить одиниці МБ, але
+    # потребує встановленого на цільовій машині .NET 8 Desktop Runtime.
+    # Це те, що йде в "Min" архів.
+    - name: Publish GUI (framework-dependent, single file, win-x64)
+      run: |
+        dotnet publish "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj" `
+          -c Release `
+          -r win-x64 `
+          --self-contained false `
+          -p:PublishSingleFile=true `
+          -o artifacts/gui-min
+      shell: pwsh
+
+    # Self-contained single file, win-x64: важчий exe (вбудований CLR/WPF),
+    # зате нічого встановлювати додатково не треба. Йде в "Full" архів.
+    - name: Publish GUI (self-contained, single file, win-x64)
+      run: |
+        dotnet publish "$env:GUI_PROJECT_DIR\$env:GUI_PROJECT_NAME.csproj" `
+          -c Release `
+          -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -p:EnableCompressionInSingleFile=true `
+          -o artifacts/gui-full
+      shell: pwsh
+
+    # =====================================================================
+    # Формуємо структуру WellspringPTP/Gui для обох варіантів - та сама
+    # схема, що й в BuildAll.yml, тільки без теки Driver.
+    # =====================================================================
+    - name: Stage folder structure (WellspringPTP/Gui)
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        New-Item -ItemType Directory -Path "stage/min/WellspringPTP/Gui"  -Force | Out-Null
+        New-Item -ItemType Directory -Path "stage/full/WellspringPTP/Gui" -Force | Out-Null
+
+        Copy-Item -Path "artifacts/gui-min/*"  -Destination "stage/min/WellspringPTP/Gui"  -Recurse -Force
+        Copy-Item -Path "artifacts/gui-full/*" -Destination "stage/full/WellspringPTP/Gui" -Recurse -Force
+
+        Write-Host "== stage/min =="
+        Get-ChildItem -Recurse "stage/min" | Select-Object -ExpandProperty FullName
+        Write-Host "== stage/full =="
+        Get-ChildItem -Recurse "stage/full" | Select-Object -ExpandProperty FullName
+      shell: pwsh
+
+    - name: Upload Min archive (GUI without bundled .NET)
+      uses: actions/upload-artifact@v4
+      with:
+        name: WellspringPTP-Gui-Min-${{ env.BUILD_VERSION }}
+        path: stage/min
+        if-no-files-found: error
+
+    - name: Upload Full archive (GUI, self-contained)
+      uses: actions/upload-artifact@v4
+      with:
+        name: WellspringPTP-Gui-Full-${{ env.BUILD_VERSION }}
+        path: stage/full
+        if-no-files-found: error
