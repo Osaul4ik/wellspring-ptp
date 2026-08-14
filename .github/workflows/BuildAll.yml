@@ -34,6 +34,8 @@ jobs:
     name: Build Driver (AmtPtpDeviceUsbKm.sys)
     runs-on: windows-2022
     timeout-minutes: 45
+    outputs:
+      driver_version: ${{ steps.driverver.outputs.driver_version }}
 
     steps:
     - uses: actions/checkout@v4
@@ -85,6 +87,7 @@ jobs:
     # інших workflow цього репозиторію - для узгодженого нейминга артефактів.
     # =====================================================================
     - name: Compute driver version and date
+      id: driverver
       run: |
         $ErrorActionPreference = "Stop"
         $now = Get-Date
@@ -97,6 +100,7 @@ jobs:
 
         Add-Content -Path $env:GITHUB_ENV -Value "DRIVER_DATE=$driverDate"
         Add-Content -Path $env:GITHUB_ENV -Value "DRIVER_VERSION=$driverVersion"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "driver_version=$driverVersion"
       shell: pwsh
 
     - name: Build USB KM Driver
@@ -373,55 +377,103 @@ jobs:
         if-no-files-found: error
 
   # =============================================================================
-  # Job 3: об'єднаний пакет - .sys/.inf драйвера разом з GUI в одному архіві,
-  # щоб користувач міг завантажити один артефакт і отримати все необхідне для
-  # тестового встановлення (Test Mode) + панель керування налаштуваннями.
+  # Job 3: пакування у два готові до розповсюдження ZIP-архіви. Обидва мають
+  # однакову структуру - папка WellspringPTP/, а в ній Driver/ та Gui/ - і
+  # відрізняються лише збіркою GUI, що лежить у Gui/:
+  #   - WellspringPTP-Min   -> Driver + GUI (framework-dependent, БЕЗ
+  #     вбудованого .NET runtime; потребує встановленого .NET 8 Desktop
+  #     Runtime на цільовій машині, зате exe важить одиниці МБ)
+  #   - WellspringPTP-Full  -> Driver + GUI (self-contained, з вбудованим
+  #     .NET runtime; нічого додатково встановлювати не треба)
+  # Кожен архів завантажується як ОКРЕМИЙ артефакт workflow, тобто в списку
+  # артефактів запуску завжди рівно два готові .zip-файли.
   # Запускається тільки якщо обидва попередні job успішні.
   # =============================================================================
-  package-combined:
-    name: Package combined artifact
+  package-archives:
+    name: Package archives (Min + Full)
     needs: [ build-driver, build-gui ]
-    runs-on: windows-2022
+    runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    env:
+      DRIVER_VERSION: ${{ needs.build-driver.outputs.driver_version }}
 
     steps:
     - name: Download driver artifact
       uses: actions/download-artifact@v4
       with:
         pattern: AmtPtpDeviceUsbKm-*
-        path: combined/driver
+        path: src/driver
         merge-multiple: true
 
-    # Two separate GUI artifacts now exist (framework-dependent "small" build
-    # and self-contained "standalone" build). Both publish an exe with the
-    # same file name, so they must land in separate subfolders - a single
-    # "AmtPtpConfigGui-*" pattern with merge-multiple would match both names
-    # and silently overwrite one exe with the other in the combined package.
-    - name: Download GUI artifact (framework-dependent)
+    # Дві окремі GUI-збірки (framework-dependent "min" і self-contained
+    # "full") публікують exe з однаковим ім'ям, тому завантажуємо їх у різні
+    # тимчасові підпапки, щоб одна не затерла іншу.
+    - name: Download GUI artifact (framework-dependent, for Min)
       uses: actions/download-artifact@v4
       with:
         name: AmtPtpConfigGui-${{ github.sha }}
-        path: combined/gui
+        path: src/gui-min
 
-    - name: Download GUI artifact (self-contained)
+    - name: Download GUI artifact (self-contained, for Full)
       uses: actions/download-artifact@v4
       with:
         name: AmtPtpConfigGui-standalone-${{ github.sha }}
-        path: combined/gui-standalone
+        path: src/gui-full
 
-    - name: List combined contents
+    # =====================================================================
+    # Формуємо однакову структуру папок WellspringPTP/Driver + /Gui
+    # для обох варіантів пакування, після чого стискаємо кожну окремо в
+    # свій ZIP-архів.
+    # =====================================================================
+    - name: Stage folder structure
       run: |
-        Write-Host "== driver =="
-        Get-ChildItem -Recurse combined/driver | Select-Object -ExpandProperty FullName
-        Write-Host "== gui (framework-dependent) =="
-        Get-ChildItem -Recurse combined/gui | Select-Object -ExpandProperty FullName
-        Write-Host "== gui-standalone (self-contained) =="
-        Get-ChildItem -Recurse combined/gui-standalone | Select-Object -ExpandProperty FullName
-      shell: pwsh
+        set -euo pipefail
 
-    - name: Upload combined artifact
+        mkdir -p stage/min/WellspringPTP/Driver stage/min/WellspringPTP/Gui
+        mkdir -p stage/full/WellspringPTP/Driver stage/full/WellspringPTP/Gui
+
+        cp -r src/driver/. stage/min/WellspringPTP/Driver/
+        cp -r src/driver/. stage/full/WellspringPTP/Driver/
+
+        cp -r src/gui-min/. stage/min/WellspringPTP/Gui/
+        cp -r src/gui-full/. stage/full/WellspringPTP/Gui/
+
+        echo "== min =="
+        find stage/min -type f
+        echo "== full =="
+        find stage/full -type f
+      shell: bash
+
+    - name: Compute archive names
+      id: names
+      run: |
+        VER="${DRIVER_VERSION:-${GITHUB_SHA::7}}"
+        echo "ver=$VER" >> "$GITHUB_OUTPUT"
+      shell: bash
+
+    - name: Create Min archive (Driver + GUI without bundled .NET)
+      run: |
+        cd stage/min
+        zip -r -9 "../../WellspringPTP-Min-${{ steps.names.outputs.ver }}.zip" WellspringPTP
+      shell: bash
+
+    - name: Create Full archive (Driver + GUI, self-contained)
+      run: |
+        cd stage/full
+        zip -r -9 "../../WellspringPTP-Full-${{ steps.names.outputs.ver }}.zip" WellspringPTP
+      shell: bash
+
+    - name: Upload Min archive
       uses: actions/upload-artifact@v4
       with:
-        name: WellspringPTP-Full-${{ github.sha }}
-        path: combined
+        name: WellspringPTP-Min-${{ steps.names.outputs.ver }}
+        path: WellspringPTP-Min-${{ steps.names.outputs.ver }}.zip
+        if-no-files-found: error
+
+    - name: Upload Full archive
+      uses: actions/upload-artifact@v4
+      with:
+        name: WellspringPTP-Full-${{ steps.names.outputs.ver }}
+        path: WellspringPTP-Full-${{ steps.names.outputs.ver }}.zip
         if-no-files-found: error
