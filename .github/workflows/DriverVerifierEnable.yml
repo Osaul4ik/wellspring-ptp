@@ -1,3 +1,4 @@
+```yaml
 name: DriverVerifierEnable
 
 on:
@@ -252,4 +253,3 @@ jobs:
           shutdown.exe /r /t 20 /c "Rebooting to apply Driver Verifier flags (watchdog armed)"
 
           Write-Host "Reboot scheduled in 20 seconds. Run DriverVerifierConfirmPostReboot after the runner reconnects."
-```
