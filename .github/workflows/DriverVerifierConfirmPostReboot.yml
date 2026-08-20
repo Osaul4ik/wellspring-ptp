@@ -1,0 +1,76 @@
+name: DriverVerifierConfirmPostReboot
+
+on:
+  workflow_dispatch:
+
+env:
+  DRIVER_FILE: AmtPtpDeviceUsbKm.sys
+  WATCHDOG_TASK_NAME: 'WellspringVerifierWatchdog'
+  WATCHDOG_REG_KEY: 'HKLM:\SOFTWARE\WellspringVerifierWatchdog'
+
+jobs:
+  confirm:
+    runs-on: [self-hosted, windows, x64, wellspring-hw]
+    steps:
+      - name: Check whether a crash dump exists from the reboot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "SilentlyContinue"
+          if (Test-Path "C:\Windows\MEMORY.DMP") {
+            $dmp = Get-Item "C:\Windows\MEMORY.DMP"
+            Write-Warning "MEMORY.DMP exists (LastWriteTime: $($dmp.LastWriteTime)). If this is newer than the reboot you just triggered, Verifier likely caught a real violation — analyze before disarming the watchdog."
+          } else {
+            Write-Host "No crash dump present. Clean boot."
+          }
+
+      - name: Verify Driver Verifier is active with expected flags
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $query = verifier /query
+          Write-Host $query
+          if ($query -notmatch [regex]::Escape($env:DRIVER_FILE)) {
+            Write-Error "Verifier is NOT monitoring $env:DRIVER_FILE. Flags may not have survived the reboot."
+            exit 1
+          }
+          Write-Host "Verifier confirmed active on $env:DRIVER_FILE."
+
+      - name: Verify driver service and device are healthy
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $svc = Get-Service -Name AmtPtpDeviceUsbKm
+          if ($svc.Status -ne "Running") {
+            Write-Error "Service status is '$($svc.Status)', expected 'Running'."
+            exit 1
+          }
+          Get-PnpDevice | Where-Object { $_.FriendlyName -like "*Wellspring*" } |
+            Format-Table Status, Class, FriendlyName, InstanceId -AutoSize
+
+          $bad = Get-PnpDevice | Where-Object { $_.FriendlyName -like "*Wellspring*" -and $_.Status -ne "OK" }
+          if ($bad) {
+            Write-Error "One or more Wellspring PnP devices are not in OK state."
+            exit 1
+          }
+          Write-Host "Service and device state OK."
+
+      - name: Disarm watchdog
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path $env:WATCHDOG_REG_KEY) {
+            Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "Armed" -Value 0 -Type DWord
+            Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "DisarmedAtUtc" -Value (Get-Date).ToUniversalTime().ToString("o")
+          }
+          Unregister-ScheduledTask -TaskName $env:WATCHDOG_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue
+          Write-Host "Watchdog disarmed and scheduled task removed. System confirmed stable under Verifier."
+
+      - name: Write confirmation log
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path "C:\VerifierRuns" -Force | Out-Null
+          $log = "C:\VerifierRuns\post-reboot-confirmed-$(Get-Date -Format yyyyMMdd-HHmmss).txt"
+          "Confirmed at $(Get-Date -Format o)" | Out-File -FilePath $log -Encoding utf8
+          verifier /query | Out-File -FilePath $log -Append -Encoding utf8
+          Write-Host "Confirmation log: $log"

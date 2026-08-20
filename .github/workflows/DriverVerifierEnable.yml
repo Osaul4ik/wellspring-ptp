@@ -1,0 +1,183 @@
+name: DriverVerifierEnable
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type YES to confirm — this WILL apply Verifier flags and schedule a reboot'
+        required: true
+      watchdog_grace_minutes:
+        description: 'Minutes to wait for post-reboot confirmation before watchdog auto-resets Verifier'
+        required: false
+        default: '10'
+
+env:
+  DRIVER_FILE: AmtPtpDeviceUsbKm.sys
+  # 0x0039AFBF = all Standard + Additional flags EXCEPT 0x00040000
+  # (Systematic Low Resource Simulation is excluded — it can render
+  # the system unbootable by exhausting allocations on every boot-critical
+  # driver in the chain, not just ours. See ADR note in step below.)
+  VERIFIER_FLAGS: '0x0039AFBF'
+  WATCHDOG_TASK_NAME: 'WellspringVerifierWatchdog'
+  WATCHDOG_REG_KEY: 'HKLM:\SOFTWARE\WellspringVerifierWatchdog'
+
+jobs:
+  enable-verifier:
+    runs-on: [self-hosted, windows, x64, wellspring-hw]
+    steps:
+      - name: Validate confirmation
+        shell: powershell
+        run: |
+          if ("${{ github.event.inputs.confirm }}" -ne "YES") {
+            Write-Error "Confirmation not provided. Aborting."
+            exit 1
+          }
+
+      # --- PRE-FLIGHT: runner must survive the reboot on its own ---
+      - name: Preflight - verify runner is installed as a Windows service
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $svc = Get-Service | Where-Object { $_.Name -like "actions.runner*" }
+          if (-not $svc) {
+            Write-Error "GitHub Actions runner is not installed as a Windows service. It will NOT reconnect after reboot. Install via '.\config.cmd --runasservice' or './svc.sh install' before proceeding."
+            exit 1
+          }
+          if ($svc.StartType -ne "Automatic") {
+            Write-Error "Runner service StartType is '$($svc.StartType)', expected 'Automatic'. Fix with: Set-Service -Name $($svc.Name) -StartupType Automatic"
+            exit 1
+          }
+          Write-Host "Runner service OK: $($svc.Name), StartType=$($svc.StartType), Status=$($svc.Status)"
+
+      - name: Preflight - verify driver is present and loaded
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $drv = Get-CimInstance Win32_SystemDriver -Filter "Name='AmtPtpDeviceUsbKm'"
+          if (-not $drv) {
+            Write-Error "Driver service AmtPtpDeviceUsbKm not found."
+            exit 1
+          }
+          if ($drv.State -ne "Running") {
+            Write-Error "Driver state is '$($drv.State)', expected 'Running'."
+            exit 1
+          }
+          $fileName = Split-Path $drv.PathName -Leaf
+          if ($fileName -ne $env:DRIVER_FILE) {
+            Write-Error "Actual driver file '$fileName' does not match expected '$env:DRIVER_FILE'."
+            exit 1
+          }
+          Write-Host "Driver OK: $fileName, State=$($drv.State)"
+
+      - name: Preflight - verify disk space and pagefile for crash dump
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+          $sysDrive = (Get-CimInstance Win32_OperatingSystem).SystemDrive
+          $free = (Get-PSDrive -Name $sysDrive.TrimEnd(':')).Free
+          $neededBytes = $ramBytes + 300MB
+          Write-Host "RAM: $([math]::Round($ramBytes/1GB,2)) GB | Free on $sysDrive : $([math]::Round($free/1GB,2)) GB | Needed: $([math]::Round($neededBytes/1GB,2)) GB"
+          if ($free -lt $neededBytes) {
+            Write-Error "Insufficient free disk space for a full kernel/complete memory dump. Free up space or dump analysis will be impossible after a Verifier-triggered bugcheck."
+            exit 1
+          }
+          $pf = Get-CimInstance Win32_PageFileUsage
+          if (-not $pf) {
+            Write-Warning "No pagefile detected or system-managed pagefile could not be queried. Verify manually that pagefile is >= RAM + 300MB, or dumps may be truncated/unavailable."
+          }
+
+      - name: Configure crash dump collection
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cc = "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl"
+          Set-ItemProperty -Path $cc -Name "CrashDumpEnabled" -Value 1     # Complete memory dump
+          Set-ItemProperty -Path $cc -Name "DumpFile" -Value "C:\Windows\MEMORY.DMP"
+          Set-ItemProperty -Path $cc -Name "AlwaysKeepMemoryDump" -Value 1
+          Set-ItemProperty -Path $cc -Name "AutoReboot" -Value 0
+          Set-ItemProperty -Path $cc -Name "Overwrite" -Value 1
+          Write-Host "Crash dump configuration applied."
+
+      # --- SAFETY NET: self-healing watchdog in case the box doesn't come back cleanly ---
+      - name: Arm watchdog (auto-reset Verifier if not disarmed after reboot)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -Path $env:WATCHDOG_REG_KEY -Force | Out-Null
+          Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "Armed" -Value 1 -Type DWord
+          Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "ArmedAtUtc" -Value (Get-Date).ToUniversalTime().ToString("o")
+          Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "GraceMinutes" -Value ([int]"${{ github.event.inputs.watchdog_grace_minutes }}") -Type DWord
+          Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "BootCount" -Value 0 -Type DWord
+
+          # Watchdog script: runs at every boot via Scheduled Task.
+          # Logic: if still armed AND grace period since arming has elapsed
+          # AND this is not the very first post-reboot boot (BootCount >= 1),
+          # then something failed to disarm it in time -> revert Verifier and reboot clean.
+          $watchdogScript = @'
+$ErrorActionPreference = "SilentlyContinue"
+$key = "HKLM:\SOFTWARE\WellspringVerifierWatchdog"
+if (-not (Test-Path $key)) { exit 0 }
+
+$armed = (Get-ItemProperty -Path $key -Name "Armed" -ErrorAction SilentlyContinue).Armed
+if ($armed -ne 1) { exit 0 }
+
+$bootCount = (Get-ItemProperty -Path $key -Name "BootCount" -ErrorAction SilentlyContinue).BootCount
+if (-not $bootCount) { $bootCount = 0 }
+$bootCount++
+Set-ItemProperty -Path $key -Name "BootCount" -Value $bootCount -Type DWord
+
+$armedAt = [datetime]::Parse((Get-ItemProperty -Path $key -Name "ArmedAtUtc").ArmedAtUtc).ToUniversalTime()
+$graceMin = (Get-ItemProperty -Path $key -Name "GraceMinutes").GraceMinutes
+$elapsed = ((Get-Date).ToUniversalTime() - $armedAt).TotalMinutes
+
+Start-Sleep -Seconds 30  # let boot settle before evaluating
+
+if ($bootCount -ge 2 -or $elapsed -gt $graceMin) {
+    # Grace period blown or we already survived one failed boot without disarm -> revert.
+    & verifier /reset
+    Set-ItemProperty -Path $key -Name "Armed" -Value 0 -Type DWord
+    Set-ItemProperty -Path $key -Name "RevertedAtUtc" -Value (Get-Date).ToUniversalTime().ToString("o")
+    Unregister-ScheduledTask -TaskName "WellspringVerifierWatchdog" -Confirm:$false -ErrorAction SilentlyContinue
+    shutdown.exe /r /t 10 /c "Verifier watchdog: reverting to clean state after failed confirmation window"
+}
+'@
+          $scriptPath = "C:\ProgramData\WellspringVerifierWatchdog.ps1"
+          Set-Content -Path $scriptPath -Value $watchdogScript -Encoding UTF8
+
+          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+          $trigger = New-ScheduledTaskTrigger -AtStartup
+          $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+
+          Unregister-ScheduledTask -TaskName $env:WATCHDOG_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue
+          Register-ScheduledTask -TaskName $env:WATCHDOG_TASK_NAME -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
+
+          Write-Host "Watchdog armed. Grace window: $(${{ github.event.inputs.watchdog_grace_minutes }}) min. Task: $env:WATCHDOG_TASK_NAME"
+          Write-Host "REMINDER: run the DriverVerifierConfirmPostReboot workflow after reboot to disarm it."
+
+      - name: Apply Driver Verifier flags
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          verifier /flags $env:VERIFIER_FLAGS /driver $env:DRIVER_FILE
+          $settings = verifier /querysettings
+          Write-Host $settings
+
+      - name: Snapshot pre-reboot state to artifact log
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path "C:\VerifierRuns" -Force | Out-Null
+          $log = "C:\VerifierRuns\pre-reboot-$(Get-Date -Format yyyyMMdd-HHmmss).txt"
+          verifier /query | Out-File -FilePath $log -Encoding utf8
+          Get-Service AmtPtpDeviceUsbKm | Out-File -FilePath $log -Append -Encoding utf8
+          Write-Host "Snapshot written to $log"
+
+      - name: Schedule delayed reboot
+        shell: powershell
+        run: |
+          # Delay lets this job report success before the connection drops.
+          shutdown.exe /r /t 20 /c "Rebooting to apply Driver Verifier flags (watchdog armed)"
+          Write-Host "Reboot scheduled in 20 seconds. Run DriverVerifierConfirmPostReboot after the runner reconnects."
