@@ -133,7 +133,46 @@ This step is important before installing another Apple touchpad driver (Trackpad
 * ✅ Driver optimization
 * ✅ Code audit
 * ✅ Micro optimization & tuning
+
+---
+
+## 🧪 BETA RELEASE NOTES
+
+### What's New
+
+- 🔄 **Driver Lifecycle Rework** — redesigned driver lifecycle, initialization, and reinitialization handling.
+- 🖥️ **New GUI** — detailed driver configuration and diagnostic tools.
+- 🔧 **Pro Mode** — additional advanced configuration options for detailed driver tuning.
+- ⚡ **Live Mode** — displays the actual number of active contacts and their current positions in real time.
+- 👆 **Contact Preview** — active contacts and their positions are visualized directly in the GUI Preview.
+- 🐛 **Debug Mode** — additional diagnostic output for troubleshooting and development.
+- ⚙️ **Extended Configuration** — significantly more driver parameters can be configured directly through the GUI.
+
+### ⚠️ Known Issues
+
+- Launching the GUI multiple times can open multiple application instances.
+- If **Live Mode** is enabled before entering Sleep, it may become stuck after Resume. Disable and re-enable Live Mode to restore it.
+- The GUI context menu may have incorrect scaling when Windows Display Scaling is enabled.
+- **Live Mode consumes additional system resources** and should not be enabled unless real-time contact visualization or testing is required.
+
+### 📝 Bug Reports
+
+For useful bug reports:
+
+1. Open **GUI → Settings**.
+2. Enable **Debug Mode**.
+3. Reproduce the issue.
+4. Capture the driver log using **DbgView**.
+5. Include the captured log and the configuration used when reporting the issue.
+
+### 📦 GUI Versions
+
+Two GUI versions are included:
+
+- **Min** — requires **.NET 8 Desktop Runtime (x64)** to be installed separately.
+- **Full** — includes the required .NET Runtime and does not require a separate .NET installation.
   
+---
 
 # Credits
 
