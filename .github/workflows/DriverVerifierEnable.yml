@@ -110,7 +110,7 @@ jobs:
 
           $cc = "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl"
 
-          Set-ItemProperty -Path $cc -Name "CrashDumpEnabled" -Value 1     # Complete memory dump
+          Set-ItemProperty -Path $cc -Name "CrashDumpEnabled" -Value 2     # Complete memory dump
           Set-ItemProperty -Path $cc -Name "DumpFile" -Value "C:\Windows\MEMORY.DMP"
           Set-ItemProperty -Path $cc -Name "AlwaysKeepMemoryDump" -Value 1
           Set-ItemProperty -Path $cc -Name "AutoReboot" -Value 1
