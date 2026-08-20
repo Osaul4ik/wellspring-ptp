@@ -1,0 +1,39 @@
+name: RunnerTest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: [self-hosted, windows, x64, wellspring-hw]
+
+    steps:
+      - name: Identify machine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "User: $env:USERNAME"
+          Write-Host "OS:"
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, BuildNumber |
+            Format-List
+
+          Write-Host "Runner:"
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+
+      - name: Check Wellspring driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Get-Service -Name AmtPtpDeviceUsbKm
+
+          Get-PnpDevice |
+            Where-Object {
+              $_.FriendlyName -like "*Wellspring*"
+            } |
+            Format-Table Status,Class,FriendlyName,InstanceId -AutoSize
