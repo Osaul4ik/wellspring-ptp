@@ -13,11 +13,19 @@ on:
 
 env:
   DRIVER_FILE: AmtPtpDeviceUsbKm.sys
-  # 0x0039AFBF = all Standard + Additional flags EXCEPT 0x00040000
-  # (Systematic Low Resource Simulation is excluded — it can render
-  # the system unbootable by exhausting allocations on every boot-critical
-  # driver in the chain, not just ours. See ADR note in step below.)
-  VERIFIER_FLAGS: '0x0039AFBF'
+
+  # 0x0009AFBF =
+  # all Standard + Additional verification flags selected here,
+  # EXCEPT:
+  #   0x00020000 Systematic Low Resource Simulation
+  #   0x00100000 RESERVED / unsupported
+  #   0x00200000 NDIS/WIFI verification
+  #
+  # This keeps Driver Verifier focused on Wellspring and prevents
+  # NDIS/WIFI verification from pulling ndis.sys / wdiwifi.sys
+  # into the verification target set.
+  VERIFIER_FLAGS: '0x0009AFBF'
+
   WATCHDOG_TASK_NAME: 'WellspringVerifierWatchdog'
   WATCHDOG_REG_KEY: 'HKLM:\SOFTWARE\WellspringVerifierWatchdog'
 
@@ -93,14 +101,14 @@ jobs:
           Write-Host "RAM: $([math]::Round($ramBytes/1GB,2)) GB | Free on $sysDrive : $([math]::Round($free/1GB,2)) GB | Needed: $([math]::Round($neededBytes/1GB,2)) GB"
 
           if ($free -lt $neededBytes) {
-            Write-Error "Insufficient free disk space for a full kernel/complete memory dump. Free up space or dump analysis will be impossible after a Verifier-triggered bugcheck."
+            Write-Error "Insufficient free disk space for the configured kernel memory dump. Free up space or dump analysis may be impossible after a Verifier-triggered bugcheck."
             exit 1
           }
 
           $pf = Get-CimInstance Win32_PageFileUsage
 
           if (-not $pf) {
-            Write-Warning "No pagefile detected or system-managed pagefile could not be queried. Verify manually that pagefile is >= RAM + 300MB, or dumps may be truncated/unavailable."
+            Write-Warning "No pagefile detected or system-managed pagefile could not be queried. Verify manually that the pagefile is sufficiently large for kernel dump collection."
           }
 
       - name: Configure crash dump collection
@@ -110,13 +118,14 @@ jobs:
 
           $cc = "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl"
 
-          Set-ItemProperty -Path $cc -Name "CrashDumpEnabled" -Value 2     # Complete memory dump
+          # 2 = Kernel memory dump
+          Set-ItemProperty -Path $cc -Name "CrashDumpEnabled" -Value 2
           Set-ItemProperty -Path $cc -Name "DumpFile" -Value "C:\Windows\MEMORY.DMP"
           Set-ItemProperty -Path $cc -Name "AlwaysKeepMemoryDump" -Value 1
-          Set-ItemProperty -Path $cc -Name "AutoReboot" -Value 1
+          Set-ItemProperty -Path $cc -Name "AutoReboot" -Value 0
           Set-ItemProperty -Path $cc -Name "Overwrite" -Value 1
 
-          Write-Host "Crash dump configuration applied."
+          Write-Host "Kernel memory dump configuration applied."
 
       # --- SAFETY NET: self-healing watchdog in case the box doesn't come back cleanly ---
       - name: Arm watchdog (auto-reset Verifier if not disarmed after reboot)
@@ -132,10 +141,6 @@ jobs:
           Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "GraceMinutes" -Value $graceMinutes -Type DWord
           Set-ItemProperty -Path $env:WATCHDOG_REG_KEY -Name "BootCount" -Value 0 -Type DWord
 
-          # Watchdog script: runs at every boot via Scheduled Task.
-          # Logic: if still armed AND grace period since arming has elapsed
-          # AND this is not the very first post-reboot boot (BootCount >= 1),
-          # then something failed to disarm it in time -> revert Verifier and reboot clean.
           $watchdogScript = @'
           $ErrorActionPreference = "SilentlyContinue"
 
@@ -171,16 +176,18 @@ jobs:
           $armedAt = [datetime]::Parse($armedAtValue).ToUniversalTime()
           $elapsed = ((Get-Date).ToUniversalTime() - $armedAt).TotalMinutes
 
-          Start-Sleep -Seconds 30  # let boot settle before evaluating
+          Start-Sleep -Seconds 30
 
           if ($bootCount -ge 2 -or $elapsed -gt $graceMin) {
-              # Grace period blown or we already survived one failed boot without disarm -> revert.
               & verifier /reset
 
               Set-ItemProperty -Path $key -Name "Armed" -Value 0 -Type DWord
               Set-ItemProperty -Path $key -Name "RevertedAtUtc" -Value (Get-Date).ToUniversalTime().ToString("o")
 
-              Unregister-ScheduledTask -TaskName "WellspringVerifierWatchdog" -Confirm:$false -ErrorAction SilentlyContinue
+              Unregister-ScheduledTask `
+                -TaskName "WellspringVerifierWatchdog" `
+                -Confirm:$false `
+                -ErrorAction SilentlyContinue
 
               shutdown.exe /r /t 10 /c "Verifier watchdog: reverting to clean state after failed confirmation window"
           }
@@ -188,7 +195,10 @@ jobs:
 
           $scriptPath = "C:\ProgramData\WellspringVerifierWatchdog.ps1"
 
-          Set-Content -Path $scriptPath -Value $watchdogScript -Encoding UTF8
+          Set-Content `
+            -Path $scriptPath `
+            -Value $watchdogScript `
+            -Encoding UTF8
 
           $action = New-ScheduledTaskAction `
             -Execute "powershell.exe" `
@@ -226,10 +236,26 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          # Target ONLY Wellspring.
           verifier /flags $env:VERIFIER_FLAGS /driver $env:DRIVER_FILE
 
           $settings = verifier /querysettings
           Write-Host $settings
+
+          $query = verifier /query
+          Write-Host $query
+
+          # Safety check: the target list must contain Wellspring.
+          if ($query -notmatch [regex]::Escape($env:DRIVER_FILE)) {
+            Write-Error "Driver Verifier is NOT configured for $env:DRIVER_FILE."
+            exit 1
+          }
+
+          # Ensure the unrelated NDIS/WIFI drivers are not explicitly targeted.
+          if ($query -match 'wdiwifi\.sys|ndis\.sys') {
+            Write-Error "NDIS/WIFI verification target detected. Verifier configuration is not Wellspring-only."
+            exit 1
+          }
 
       - name: Snapshot pre-reboot state to artifact log
         shell: powershell
@@ -241,6 +267,7 @@ jobs:
           $log = "C:\VerifierRuns\pre-reboot-$(Get-Date -Format yyyyMMdd-HHmmss).txt"
 
           verifier /query | Out-File -FilePath $log -Encoding utf8
+          verifier /querysettings | Out-File -FilePath $log -Append -Encoding utf8
           Get-Service AmtPtpDeviceUsbKm | Out-File -FilePath $log -Append -Encoding utf8
 
           Write-Host "Snapshot written to $log"
@@ -248,7 +275,6 @@ jobs:
       - name: Schedule delayed reboot
         shell: powershell
         run: |
-          # Delay lets this job report success before the connection drops.
           shutdown.exe /r /t 20 /c "Rebooting to apply Driver Verifier flags (watchdog armed)"
 
           Write-Host "Reboot scheduled in 20 seconds. Run DriverVerifierConfirmPostReboot after the runner reconnects."
