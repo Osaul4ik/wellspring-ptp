@@ -113,7 +113,7 @@ jobs:
           Set-ItemProperty -Path $cc -Name "CrashDumpEnabled" -Value 1     # Complete memory dump
           Set-ItemProperty -Path $cc -Name "DumpFile" -Value "C:\Windows\MEMORY.DMP"
           Set-ItemProperty -Path $cc -Name "AlwaysKeepMemoryDump" -Value 1
-          Set-ItemProperty -Path $cc -Name "AutoReboot" -Value 0
+          Set-ItemProperty -Path $cc -Name "AutoReboot" -Value 1
           Set-ItemProperty -Path $cc -Name "Overwrite" -Value 1
 
           Write-Host "Crash dump configuration applied."
