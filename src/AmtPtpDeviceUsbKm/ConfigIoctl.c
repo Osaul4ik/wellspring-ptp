@@ -199,6 +199,7 @@ AmtPointerConfigClamp(_Inout_ PAMT_POINTER_CONFIG Config)
     Config->ForceTouchEnabled = Config->ForceTouchEnabled ? 1u : 0u;
     Config->RequirePressureToActivate = Config->RequirePressureToActivate ? 1u : 0u;
     Config->RequirePressureContinuously = Config->RequirePressureContinuously ? 1u : 0u;
+    Config->ForceTouchActionEnabled = Config->ForceTouchActionEnabled ? 1u : 0u;
     // Small-contact gates: two INDEPENDENT on/off flags (birth-only vs
     // continuous) - neither is forced off by the other being off. Each has
     // its own Major ("M") threshold, clamped to the same shared range.
@@ -402,6 +403,7 @@ AmtPointerConfigLoadFromRegistry(
     AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_ENABLED, &Config->ForceTouchEnabled);
     AmtRegistryReadDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE,   &Config->RequirePressureToActivate);
     AmtRegistryReadDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE_CONTINUOUS, &Config->RequirePressureContinuously);
+    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_ACTION_ENABLED, &Config->ForceTouchActionEnabled);
     AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_SMOOTH,      &Config->CursorSmoothingPercent);
     AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_SPEED,       &Config->CursorSpeedPercent);
     AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_DEADZONE,    &Config->CursorDeadzone);
@@ -458,6 +460,7 @@ AmtPointerConfigSaveToRegistry(
     AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_ENABLED, Config->ForceTouchEnabled);
     AmtRegistryWriteDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE,   Config->RequirePressureToActivate);
     AmtRegistryWriteDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE_CONTINUOUS, Config->RequirePressureContinuously);
+    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_ACTION_ENABLED, Config->ForceTouchActionEnabled);
     AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_SMOOTH,      Config->CursorSmoothingPercent);
     AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_SPEED,       Config->CursorSpeedPercent);
     AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_DEADZONE,    Config->CursorDeadzone);

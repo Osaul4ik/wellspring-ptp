@@ -149,9 +149,18 @@ typedef struct _AMT_POINTER_CONFIG
     // separately.
     ULONG ForceTapDragLockoutDistance;              // hardware (pressure) path
     ULONG ForceTouchEmulationDragLockoutDistance;   // emulation (hold-timer) path
+
+    // Force Touch action (hard-press click arbitration -> Force Tap action).
+    // ForceTouchEnabled is the master switch for hardware Force Touch; with
+    // it on, this flag, RequirePressureToActivate and
+    // RequirePressureContinuously are three independent options. Turning
+    // this one off leaves the two pressure gates working without any
+    // Force Tap action being emitted. Has no effect when ForceTouchEnabled
+    // is 0. Default 1 (the behaviour before this flag existed).
+    ULONG ForceTouchActionEnabled;
 } AMT_POINTER_CONFIG, *PAMT_POINTER_CONFIG;
 
-#define AMT_POINTER_CONFIG_VERSION 11
+#define AMT_POINTER_CONFIG_VERSION 12
 
 #define AMT_POINTER_SMOOTH_MIN       0
 #define AMT_POINTER_SMOOTH_MAX       100
@@ -216,7 +225,8 @@ typedef struct _AMT_POINTER_CONFIG
     AMT_POINTER_ACTION_CONTEXT_MENU,                                        \
     300,                                                                    \
     110,                                                                    \
-    110                                                                      \
+    110,                                                                    \
+    /* ForceTouchActionEnabled                 */ 1                        \
 }
 
 // Sane clamp range - raw pressure realistically spans ~0-300, so keep the

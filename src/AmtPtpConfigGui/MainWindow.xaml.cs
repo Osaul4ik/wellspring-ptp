@@ -793,6 +793,11 @@ namespace AmtPtpConfigGui
                     cfg.SmallContactBirthMajorThreshold = defaults.SmallContactBirthMajorThreshold;
                     cfg.ForceTouchSmallContactBirthMajorThreshold = defaults.ForceTouchSmallContactBirthMajorThreshold;
                 }
+
+                // Version 11 → 12: Force Touch action is its own switch under
+                // the "Enable Force Touch" master; older configs keep it on.
+                if (cfg.StructVersion < 12)
+                    cfg.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
             }
 
             return cfg.Clamped();
@@ -1029,22 +1034,42 @@ namespace AmtPtpConfigGui
                     {
                         Checked = forceTouchOn,
                         Padding = new System.Windows.Forms.Padding(10, 7, 10, 7),
-                        ToolTipText = "Enable Force Touch click arbitration on trackpads that support it."
+                        ToolTipText = "Master switch for Force Touch. Makes the three options below available; each can be turned on or off independently."
                     };
                     forceTouch.Click += (_, _) => Dispatcher.BeginInvoke(new Action(ToggleForceTouchFromTray));
+
+                    bool forceTouchActionOn = pointerCfg.ForceTouchActionEnabled != 0;
+
+                    var forceTouchAction = new Forms.ToolStripMenuItem("Force Touch action")
+                    {
+                        Checked = forceTouchActionOn,
+                        Enabled = forceTouchOn,
+                        Padding = new System.Windows.Forms.Padding(28, 7, 10, 7),
+                        ToolTipText = "A hard press triggers the Force Tap action. Turn off to keep the pressure options working without sending any action."
+                    };
+                    forceTouchAction.Click += (_, _) => Dispatcher.BeginInvoke(new Action(ToggleForceTouchActionFromTray));
 
                     var requirePressure = new Forms.ToolStripMenuItem("Require pressure to activate contact")
                     {
                         Checked = pointerCfg.RequirePressureToActivate != 0,
                         Enabled = forceTouchOn,
-                        Padding = new System.Windows.Forms.Padding(10, 7, 10, 7)
+                        Padding = new System.Windows.Forms.Padding(28, 7, 10, 7)
                     };
                     requirePressure.Click += (_, _) => Dispatcher.BeginInvoke(new Action(TogglePressureGateFromTray));
+
+                    var requirePressureContinuous = new Forms.ToolStripMenuItem("Require pressure continuously")
+                    {
+                        Checked = pointerCfg.RequirePressureContinuously != 0,
+                        Enabled = forceTouchOn,
+                        Padding = new System.Windows.Forms.Padding(28, 7, 10, 7),
+                        ToolTipText = "Ignore a Force-Touch contact on any frame where pressure is zero."
+                    };
+                    requirePressureContinuous.Click += (_, _) => Dispatcher.BeginInvoke(new Action(TogglePressureContinuousFromTray));
 
                     // Dedicated item that expands into the list of Force Tap button types.
                     var actionMenu = new RoundedMenuItem("Force Tap action")
                     {
-                        Enabled = forceTouchOn,
+                        Enabled = forceTouchOn && forceTouchActionOn,
                         Padding = new System.Windows.Forms.Padding(10, 7, 10, 7),
                         ToolTipText = "Choose what a hard press sends: context menu, middle click, or double click."
                     };
@@ -1053,20 +1078,9 @@ namespace AmtPtpConfigGui
                     AddTrayActionItem(actionMenu, "Double click", PointerConfig.ActionDoubleClick, pointerCfg.ForceTapAction);
 
                     menu.Items.Add(forceTouch);
+                    menu.Items.Add(forceTouchAction);
                     menu.Items.Add(requirePressure);
-
-                    if (forceTouchOn && pointerCfg.RequirePressureToActivate != 0)
-                    {
-                        var requirePressureContinuous = new Forms.ToolStripMenuItem("Require pressure continuously")
-                        {
-                            Checked = pointerCfg.RequirePressureContinuously != 0,
-                            Padding = new System.Windows.Forms.Padding(28, 7, 10, 7),
-                            ToolTipText = "Ignore a Force-Touch contact on any frame where pressure is zero."
-                        };
-                        requirePressureContinuous.Click += (_, _) => Dispatcher.BeginInvoke(new Action(TogglePressureContinuousFromTray));
-                        menu.Items.Add(requirePressureContinuous);
-                    }
-
+                    menu.Items.Add(requirePressureContinuous);
                     menu.Items.Add(actionMenu);
                 }
 
@@ -1116,6 +1130,13 @@ namespace AmtPtpConfigGui
         private void ToggleForceTouchFromTray()
         {
             ChkForceTouchEnabled.IsChecked = ChkForceTouchEnabled.IsChecked != true;
+            CommitCurrentConfigToProfile();
+            RefreshTrayMenu();
+        }
+
+        private void ToggleForceTouchActionFromTray()
+        {
+            ChkForceTouchAction.IsChecked = ChkForceTouchAction.IsChecked != true;
             CommitCurrentConfigToProfile();
             RefreshTrayMenu();
         }
@@ -2346,9 +2367,8 @@ namespace AmtPtpConfigGui
                 SlForceTouchSmallContactBirthMajorThreshold.Value = cfg.ForceTouchSmallContactBirthMajorThreshold;
                 ChkForceTouchSmallContactRejectionStrict.IsChecked = cfg.ForceTouchSmallContactRejectionStrict != 0;
                 SlForceTouchSmallContactMajorThreshold.Value = cfg.ForceTouchSmallContactMajorThreshold;
-                ChkRequirePressure.IsEnabled = cfg.ForceTouchEnabled != 0;
-                ChkRequirePressureContinuously.Visibility = cfg.ForceTouchEnabled != 0 ? Visibility.Visible : Visibility.Collapsed;
-                ChkRequirePressureContinuously.IsEnabled = cfg.ForceTouchEnabled != 0;
+                ChkForceTouchAction.IsChecked = cfg.ForceTouchActionEnabled != 0;
+                UpdateForceTouchOptionStates();
 
                 // Two INDEPENDENT small-contact gates per device kind - each
                 // panel's visibility follows ONLY its own checkbox, never the
@@ -2411,6 +2431,7 @@ namespace AmtPtpConfigGui
             c.RequirePressureToActivate = ChkRequirePressure.IsChecked == true ? 1u : 0u;
             c.RequirePressureContinuously =
                 ChkRequirePressureContinuously.IsChecked == true ? 1u : 0u;
+            c.ForceTouchActionEnabled = ChkForceTouchAction.IsChecked == true ? 1u : 0u;
             c.SmallContactRejectionEnabled = ChkSmallContactRejection.IsChecked == true ? 1u : 0u;
             c.SmallContactBirthMajorThreshold = (uint)SlSmallContactBirthMajorThreshold.Value;
             c.SmallContactRejectionStrict = ChkSmallContactRejectionStrict.IsChecked == true ? 1u : 0u;
@@ -2477,16 +2498,39 @@ namespace AmtPtpConfigGui
 
         private void ForceTouchOption_Changed(object sender, RoutedEventArgs e)
         {
+            UpdateForceTouchOptionStates();
+        }
+
+        // "Enable Force Touch" is the master switch: it only makes the three
+        // options (Force Touch action, Require pressure to activate contact,
+        // Require pressure continuously) available. The options themselves
+        // are independent of one another - e.g. the pressure gates stay
+        // usable with the Force Touch action switched off. The action-specific
+        // controls (threshold, drag-cancel distance, Force Tap action type)
+        // follow master AND the action switch.
+        private void UpdateForceTouchOptionStates()
+        {
             if (ChkForceTouchEnabled == null ||
+                ChkForceTouchAction == null ||
                 ChkRequirePressure == null ||
-                ChkRequirePressureContinuously == null)
+                ChkRequirePressureContinuously == null ||
+                SlForceTapThreshold == null ||
+                SlForceTapDragLockoutDistance == null ||
+                ForceTapActionPanel == null ||
+                LblForceTapAction == null)
                 return;
 
-            bool enabled = ChkForceTouchEnabled.IsChecked == true;
-            ChkRequirePressure.IsEnabled = enabled;
-            ChkRequirePressureContinuously.IsEnabled = enabled;
-            ChkRequirePressureContinuously.Visibility =
-                enabled ? Visibility.Visible : Visibility.Collapsed;
+            bool master = ChkForceTouchEnabled.IsChecked == true;
+            bool action = master && ChkForceTouchAction.IsChecked == true;
+
+            ChkForceTouchAction.IsEnabled = master;
+            ChkRequirePressure.IsEnabled = master;
+            ChkRequirePressureContinuously.IsEnabled = master;
+
+            SlForceTapThreshold.IsEnabled = action;
+            SlForceTapDragLockoutDistance.IsEnabled = action;
+            ForceTapActionPanel.IsEnabled = action;
+            LblForceTapAction.IsEnabled = action;
         }
 
         private void ForceTouchEmulationOption_Changed(object sender, RoutedEventArgs e)

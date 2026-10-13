@@ -47,7 +47,13 @@ namespace AmtPtpConfigGui.Native
         public uint ForceTapDragLockoutDistance;
         public uint ForceTouchEmulationDragLockoutDistance;
 
-        public const uint CurrentVersion = 11;
+        // Force Touch action (hard-press -> Force Tap action). ForceTouchEnabled
+        // is the master switch; with it on, this flag, RequirePressureToActivate
+        // and RequirePressureContinuously are three independent options. See the
+        // matching AMT_POINTER_CONFIG field in Public.h.
+        public uint ForceTouchActionEnabled;
+
+        public const uint CurrentVersion = 12;
         public const uint ActionContextMenu = 0;
         public const uint ActionMiddleClick = 1;
         public const uint ActionDoubleClick = 2;
@@ -96,6 +102,7 @@ namespace AmtPtpConfigGui.Native
             ForceTouchEmulationHoldMs = 300,
             ForceTapDragLockoutDistance = 110,
             ForceTouchEmulationDragLockoutDistance = 110,
+            ForceTouchActionEnabled = 1,
         };
 
         public PointerConfig Clamped()
@@ -107,6 +114,7 @@ namespace AmtPtpConfigGui.Native
             c.ForceTouchEnabled = c.ForceTouchEnabled != 0 ? 1u : 0u;
             c.RequirePressureToActivate = c.RequirePressureToActivate != 0 ? 1u : 0u;
             c.RequirePressureContinuously = c.RequirePressureContinuously != 0 ? 1u : 0u;
+            c.ForceTouchActionEnabled = c.ForceTouchActionEnabled != 0 ? 1u : 0u;
             // Two INDEPENDENT small-contact gates per device kind - neither
             // flag forces the other off. Each has its own "M" threshold.
             c.SmallContactRejectionEnabled = c.SmallContactRejectionEnabled != 0 ? 1u : 0u;

@@ -44,10 +44,12 @@ For trackpads with a real pressure channel, the driver supports configurable For
 For trackpads without a hardware pressure channel, the driver can emulate Force Touch from a mechanical hard tap.
 
 Available controls include:
-* Force Touch / Emu Force Touch enable/disable;
+* Force Touch / Emu Force Touch enable/disable (master switch for the three options below on pressure-capable trackpads);
+  * Force Touch action on/off (hard press sends the Force Tap action);
+  * require pressure to activate contact (optional pressure gate);
+  * require pressure continuously (optional continuous-pressure requirement);
+  The three options are independent: the pressure gates keep working with the Force Touch action switched off.
 * pressure threshold;
-* optional pressure gate;
-* optional continuous-pressure requirement;
 
 Force Touch/Emu action:
 * context menu;
@@ -214,4 +216,3 @@ This project is based on the excellent work of the original **mac-precision-touc
 
 # License
 * USB driver — GPL v2
-

@@ -45,6 +45,7 @@ EXTERN_C_START
 #define AMT_REG_VALUE_FORCETOUCH_ENABLED L"PointerForceTouchEnabled"
 #define AMT_REG_VALUE_REQUIRE_PRESSURE   L"PointerRequirePressureToActivate"
 #define AMT_REG_VALUE_REQUIRE_PRESSURE_CONTINUOUS L"PointerRequirePressureContinuously"
+#define AMT_REG_VALUE_FORCETOUCH_ACTION_ENABLED L"PointerForceTouchActionEnabled"
 #define AMT_REG_VALUE_CURSOR_SMOOTH      L"PointerCursorSmoothing"
 #define AMT_REG_VALUE_CURSOR_SPEED       L"PointerCursorSpeed"
 #define AMT_REG_VALUE_CURSOR_DEADZONE    L"PointerCursorDeadzone"

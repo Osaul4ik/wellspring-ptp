@@ -669,8 +669,18 @@ PTPCore_ProcessFrame(
     // and forceTouchEmulationActive are mutually exclusive by construction,
     // and a device with real hardware always takes the unmodified
     // pressure-based path below, exactly as before this feature existed.
+    //
+    // ForceTouchEnabled is the master switch for hardware Force Touch. It
+    // makes three independent options available: ForceTouchActionEnabled
+    // (the hard-press click arbitration / Force Tap action decided here),
+    // RequirePressureToActivate (birth gate, above) and
+    // RequirePressureContinuously (per-frame gate, Match.c). The two
+    // pressure gates work with the action switched off; the action itself
+    // is only live while both the master switch and its own switch are on.
     BOOLEAN forceTouchHardwareActive =
-        pCtx->SupportsForceTouch && pCtx->PointerConfig.ForceTouchEnabled;
+        pCtx->SupportsForceTouch &&
+        pCtx->PointerConfig.ForceTouchEnabled &&
+        pCtx->PointerConfig.ForceTouchActionEnabled;
     BOOLEAN forceTouchEmulationActive =
         !pCtx->SupportsForceTouch && pCtx->PointerConfig.ForceTouchEmulationEnabled;
 

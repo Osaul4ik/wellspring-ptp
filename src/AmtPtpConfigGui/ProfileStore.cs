@@ -213,6 +213,16 @@ namespace AmtPtpConfigGui
                         old.ForceTouchSmallContactBirthMajorThreshold = defaults.ForceTouchSmallContactBirthMajorThreshold;
                     }
 
+                    // Version 11 → 12: the Force Touch action (hard-press
+                    // click arbitration) became its own switch under the
+                    // "Enable Force Touch" master. Existing profiles keep the
+                    // old behaviour, where the action was always on whenever
+                    // Force Touch was enabled.
+                    if (p.Pointer.StructVersion < 12)
+                    {
+                        old.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
+                    }
+
                     if (p.Pointer.StructVersion < 3)
                     {
                         old.CursorDeadzoneSlow = defaults.CursorDeadzoneSlow;
