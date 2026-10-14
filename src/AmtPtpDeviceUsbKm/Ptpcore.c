@@ -27,7 +27,9 @@ AmtRecentLiftRecord(
     _Inout_ RECENT_LIFT_RING* Ring,
     _In_    LONGLONG          NowQpc,
     _In_    USHORT            X,
-    _In_    USHORT            Y
+    _In_    USHORT            Y,
+    _In_    USHORT            EmitX,
+    _In_    USHORT            EmitY
 )
 {
     UCHAR idx = Ring->NextWriteIndex;
@@ -35,6 +37,8 @@ AmtRecentLiftRecord(
     Ring->Entries[idx].LiftQpc = NowQpc;
     Ring->Entries[idx].X       = X;
     Ring->Entries[idx].Y       = Y;
+    Ring->Entries[idx].EmitX   = EmitX;
+    Ring->Entries[idx].EmitY   = EmitY;
     Ring->NextWriteIndex = (UCHAR)((idx + 1) % RECENT_LIFT_CAPACITY);
 }
 
@@ -46,18 +50,23 @@ AmtRecentLiftFindNearby(
     _In_  USHORT                  CandX,
     _In_  USHORT                  CandY,
     _Out_ USHORT*                 OutX,
-    _Out_ USHORT*                 OutY
+    _Out_ USHORT*                 OutY,
+    _Out_ USHORT*                 OutEmitX,
+    _Out_ USHORT*                 OutEmitY
 )
 {
     if (WindowTicks <= 0) {
         *OutX = 0;
         *OutY = 0;
+        *OutEmitX = 0;
+        *OutEmitY = 0;
         return FALSE;
     }
 
     ULONGLONG bestDistSq = ~0ULL;
     BOOLEAN   found      = FALSE;
     USHORT   bestX = 0, bestY = 0;
+    USHORT   bestEmitX = 0, bestEmitY = 0;
 
     for (UCHAR i = 0; i < RECENT_LIFT_CAPACITY; i++) {
         const RECENT_LIFT* e = &Ring->Entries[i];
@@ -79,6 +88,8 @@ AmtRecentLiftFindNearby(
             bestDistSq = distSq;
             bestX      = e->X;
             bestY      = e->Y;
+            bestEmitX  = e->EmitX;
+            bestEmitY  = e->EmitY;
             found      = TRUE;
         }
     }
@@ -89,6 +100,8 @@ AmtRecentLiftFindNearby(
     // reading these, so this doesn't change any observed behavior.
     *OutX = bestX;
     *OutY = bestY;
+    *OutEmitX = bestEmitX;
+    *OutEmitY = bestEmitY;
     return found;
 }
 
@@ -117,7 +130,9 @@ AmtCoreWriteContactSlot(
 }
 
 // Emit a contact report and queue overflow entries when needed.
-static VOID
+// Returns TRUE only when the report was placed in THIS frame (the one sent
+// to Windows); FALSE when it was queued for a later frame or dropped.
+static BOOLEAN
 AmtCoreEmitContact(
     _Inout_ PDEVICE_CONTEXT pCtx,
     _Inout_ PTP_CORE_FRAME* OutResult,
@@ -130,7 +145,7 @@ AmtCoreEmitContact(
 {
     if (OutResult->ContactCount < PTP_MAX_CONTACT_POINTS) {
         AmtCoreWriteContactSlot(OutResult, ContactID, X, Y, Phase, Confident);
-        return;
+        return TRUE;
     }
 
     if (pCtx->OverflowCount < PTP_MAX_CONTACT_POINTS) {
@@ -144,6 +159,29 @@ AmtCoreEmitContact(
     // else: overflow queue full too - event dropped. Unreachable with
     // PTP_MAX_CONTACT_POINTS physical fingers (worst case = all UPs + all
     // DOWNs, which exactly fits one frame report + one full queue).
+    return FALSE;
+}
+
+// Lift report for a contact that is going away. Windows only gets an UP for
+// an ID it has actually seen go down: a finger can land and lift again
+// before its DOWN ever left the overflow queue (e.g. a 3+ finger click
+// rebinds every ID: N UPs + N DOWNs > one frame), and an UP for such a
+// never-announced ID is a stray event for a contact that, as far as
+// Windows is concerned, never existed.
+static VOID
+AmtCoreEmitLift(
+    _Inout_ PDEVICE_CONTEXT pCtx,
+    _Inout_ PTP_CORE_FRAME* OutResult,
+    _In_    BOOLEAN         Announced,
+    _In_    ULONG           ContactID,
+    _In_    USHORT          X,
+    _In_    USHORT          Y
+)
+{
+    if (!Announced)
+        return;
+
+    (VOID)AmtCoreEmitContact(pCtx, OutResult, ContactID, X, Y, CONTACT_PHASE_UP, TRUE);
 }
 
 // Avoid emitting duplicate contact IDs in one frame.
@@ -328,15 +366,44 @@ PTPCore_ProcessFrame(
         if (!cand->PalmLocal)
             continue;
 
-        USHORT slotIndex = cand->SlotIndex;
-        for (size_t p = 0; p < MAX_CONTACTS; p++) {
-            if (pCtx->ActiveContacts[p].State == CONTACT_ACTIVE &&
-                pCtx->ActiveContacts[p].LastSlotHint == slotIndex)
-            {
-                palmLocalFrozen[p] = TRUE;
-                break;
+        // Associate this edge/palm-local candidate with the tracked contact
+        // that most plausibly slid into the dead zone: the nearest ACTIVE
+        // pool entry that no regular candidate claimed, by distance.
+        //
+        // This used to key on LastSlotHint == SlotIndex, but SlotIndex is
+        // only the scan-order position inside the USB frame, not a stable
+        // identity (see Match.c, "stale-SlotIndex bridging bug"). Any
+        // reshuffle - e.g. a second finger landing - broke the link, so the
+        // tracked finger got a phantom UP (the bug this freeze exists to
+        // prevent) or an unrelated entry was frozen instead. Geometry is
+        // the primary key everywhere else in the matcher; it is here too.
+        //
+        // Each unmatched entry is claimed at most once, and the distance is
+        // bounded by the same continuation delta the matcher uses. The
+        // frozen entry's ReportX/Y is its last SENSOR-domain position.
+        size_t    bestPool = MAX_CONTACTS;
+        ULONGLONG bestPoolDistSq = ~0ULL;
+
+        for (UCHAR u = 0; u < matchResult.UnmatchedCount; u++) {
+            size_t p = matchResult.UnmatchedPoolIndices[u];
+            if (palmLocalFrozen[p])
+                continue;
+
+            INT dxp = AmtAbsDelta((INT)cand->X, (INT)pCtx->ActiveContacts[p].ReportX);
+            INT dyp = AmtAbsDelta((INT)cand->Y, (INT)pCtx->ActiveContacts[p].ReportY);
+            if (dxp > MATCH_MAX_CONTINUATION_DELTA ||
+                dyp > MATCH_MAX_CONTINUATION_DELTA)
+                continue;
+
+            ULONGLONG dsq = AmtDistSq(dxp, dyp);
+            if (dsq < bestPoolDistSq) {
+                bestPoolDistSq = dsq;
+                bestPool       = p;
             }
         }
+
+        if (bestPool != MAX_CONTACTS)
+            palmLocalFrozen[bestPool] = TRUE;
     }
 
     // Per-frame taint gate: >=2 fingers down this frame.
@@ -367,13 +434,15 @@ PTPCore_ProcessFrame(
             // LastSeenQpc directly.
             ac->LastSeenQpc = NowQpc;
 
-            AmtCoreEmitContact(pCtx, OutResult, ac->ContactID,
-                               ac->ReportX, ac->ReportY,
-                               CONTACT_PHASE_MOVE, FALSE);
+            if (AmtCoreEmitContact(pCtx, OutResult, ac->ContactID,
+                                   ac->EmitX, ac->EmitY,
+                                   CONTACT_PHASE_MOVE, FALSE))
+                ac->Announced = TRUE;
             continue;
         }
 
         ULONG  oldId; USHORT oldX, oldY;
+        const BOOLEAN announced = ac->Announced; // before the slot is zeroed
 
         if (ac->WasInGesture) {
             // Gesture-tainted: lift immediately. The previous fake-MOVE-then-UP
@@ -382,14 +451,19 @@ PTPCore_ProcessFrame(
             // Not recorded in RecentLifts.
             AmtContactEnterGrace(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
             AmtContactExpireGrace(pCtx->ActiveContacts, p);
-            AmtCoreEmitContact(pCtx, OutResult, oldId, oldX, oldY, CONTACT_PHASE_UP, TRUE);
+            AmtCoreEmitLift(pCtx, OutResult, announced, oldId, oldX, oldY);
 
         } else {
             // Solo contact: kill immediately. palmSuppressedFrame is always
             // FALSE here - handled above, never falls through.
+            // Sensor-domain position must be read BEFORE the kill zeroes
+            // the slot; oldX/oldY returned by the kill is the position
+            // Windows last saw (used for the UP and the retap seed).
+            USHORT liftX = ac->ReportX;
+            USHORT liftY = ac->ReportY;
             AmtContactKill(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
-            AmtRecentLiftRecord(&pCtx->RecentLifts, NowQpc, oldX, oldY);
-            AmtCoreEmitContact(pCtx, OutResult, oldId, oldX, oldY, CONTACT_PHASE_UP, TRUE);
+            AmtRecentLiftRecord(&pCtx->RecentLifts, NowQpc, liftX, liftY, oldX, oldY);
+            AmtCoreEmitLift(pCtx, OutResult, announced, oldId, oldX, oldY);
         }
     }
 
@@ -421,17 +495,21 @@ PTPCore_ProcessFrame(
         // this frame's own candidate set) is the same signal Phase C uses for
         // its taint decision (see shouldTaint); using it here too keeps the
         // two decisions consistent instead of one reading stale state.
+        const BOOLEAN announcedOld = pCtx->ActiveContacts[p].Announced;
+
         if (pCtx->ActiveContacts[p].WasInGesture || gestureThisFrame) {
             AmtContactEnterGrace(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
             AmtContactExpireGrace(pCtx->ActiveContacts, p);
             // Gesture lift: not recorded in RecentLifts.
         } else {
+            USHORT liftX = pCtx->ActiveContacts[p].ReportX;
+            USHORT liftY = pCtx->ActiveContacts[p].ReportY;
             AmtContactKill(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
             // Palm-suppressed: candidates.Count==0, loop won't execute.
-            AmtRecentLiftRecord(&pCtx->RecentLifts, NowQpc, oldX, oldY);
+            AmtRecentLiftRecord(&pCtx->RecentLifts, NowQpc, liftX, liftY, oldX, oldY);
         }
 
-        AmtCoreEmitContact(pCtx, OutResult, oldId, oldX, oldY, CONTACT_PHASE_UP, TRUE);
+        AmtCoreEmitLift(pCtx, OutResult, announcedOld, oldId, oldX, oldY);
 
         matchResult.CorrespondingPoolIndex[ci] = MATCH_NO_CORRESPONDENCE;
     }
@@ -441,7 +519,7 @@ PTPCore_ProcessFrame(
     // pre-existing matched contact, in place, at its own position. Routes
     // the click through the non-snapping soft-tap TipSwitch path. The pool
     // slot is NOT freed/reacquired - WasInGesture/FramesAlive/HystX/Y/
-    // ReportX/Y carry across since the finger never left the pad.
+    // ReportX/Y/EmitX/Y carry across since the finger never left the pad.
     // Pre-existing == LastSeenQpc != 0; contacts born THIS frame are skipped.
     BOOLEAN rebindThisFrame[MAX_CONTACTS] = { 0 };
 
@@ -454,12 +532,14 @@ PTPCore_ProcessFrame(
             PACTIVE_CONTACT ac = &pCtx->ActiveContacts[p];
             if (ac->LastSeenQpc == 0) continue; // born this frame
 
-            USHORT oldX = ac->ReportX;
-            USHORT oldY = ac->ReportY;
+            // UP for the old identity goes where Windows last saw it.
+            USHORT oldX = ac->EmitX;
+            USHORT oldY = ac->EmitY;
 
             ULONG oldId;
+            const BOOLEAN announcedOld = ac->Announced; // rebind clears it
             AmtContactRebindIdentity(pCtx->ActiveContacts, p, &pCtx->NextContactId, &oldId);
-            AmtCoreEmitContact(pCtx, OutResult, oldId, oldX, oldY, CONTACT_PHASE_UP, TRUE);
+            AmtCoreEmitLift(pCtx, OutResult, announcedOld, oldId, oldX, oldY);
             // Deliberately NOT AmtRecentLiftRecord'd - not a real lift and
             // must not seed retap-smoothing for unrelated future taps.
 
@@ -523,17 +603,18 @@ PTPCore_ProcessFrame(
             continue;
         }
 
-        USHORT liftX, liftY;
+        USHORT liftX, liftY, liftEmitX, liftEmitY;
         BOOLEAN looksLikeRetap =
             AmtRecentLiftFindNearby(&pCtx->RecentLifts, NowQpc,
                                     pCtx->RetapWindowTicks,
-                                    cand->X, cand->Y, &liftX, &liftY);
+                                    cand->X, cand->Y,
+                                    &liftX, &liftY, &liftEmitX, &liftEmitY);
 
         if (looksLikeRetap) {
             // RetapSeeded: seed survives first AmtContactUpdate.
             AmtContactBirthWithRetapSmoothing(
                 pCtx->ActiveContacts, freeIdx, &pCtx->NextContactId,
-                liftX, liftY, cand->SlotIndex);
+                liftX, liftY, liftEmitX, liftEmitY, cand->SlotIndex);
         } else {
             AmtContactBirth(
                 pCtx->ActiveContacts, freeIdx, &pCtx->NextContactId,
@@ -624,12 +705,20 @@ PTPCore_ProcessFrame(
         }
 
         USHORT repX, repY;
+
+        // Normalized pad extent (same 0..(max-min) space Input.c produces):
+        // bounds the Windows-facing position, which scaling can push past
+        // the edge.
+        const USHORT padMaxX = (USHORT)(pCtx->DeviceInfo->x.max - pCtx->DeviceInfo->x.min);
+        const USHORT padMaxY = (USHORT)(pCtx->DeviceInfo->y.max - pCtx->DeviceInfo->y.min);
+
         AmtContactUpdate(c, cand->X, cand->Y,
                          cand->Major, cand->Minor, cand->Pressure,
                          cand->SlotIndex, NowQpc, pCtx->PerfFrequency.QuadPart,
                          (BOOLEAN)(aliveCount == 1), gestureThisFrame,
                          &pCtx->PointerConfig, &pCtx->ScrollConfig,
                          &pCtx->PointerRuntime, &pCtx->ScrollRuntime,
+                         padMaxX, padMaxY,
                          &repX, &repY);
 
         // ARCHITECTURE FIX (PTP spec alignment): per the Windows Precision
@@ -653,10 +742,11 @@ PTPCore_ProcessFrame(
         // is unaffected.
         BOOLEAN reportConfident = TRUE;
 
-        AmtCoreEmitContact(pCtx, OutResult, c->ContactID,
-                           repX, repY,
-                           justBorn ? CONTACT_PHASE_DOWN : CONTACT_PHASE_MOVE,
-                           reportConfident);
+        if (AmtCoreEmitContact(pCtx, OutResult, c->ContactID,
+                               repX, repY,
+                               justBorn ? CONTACT_PHASE_DOWN : CONTACT_PHASE_MOVE,
+                               reportConfident))
+            c->Announced = TRUE;
     }
 
     AmtContactPoolCheckInvariants(pCtx->ActiveContacts);

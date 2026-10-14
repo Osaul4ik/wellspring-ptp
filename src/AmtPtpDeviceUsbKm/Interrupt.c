@@ -493,14 +493,29 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
                 ULONGLONG bestDistance = ~0ULL;
                 BOOLEAN haveRawMatch = FALSE;
 
+                // The overlay and the corner calibration need the finger's
+                // PHYSICAL (sensor-domain) position. coreFrame X/Y is what
+                // Windows is told: scroll scale / cursor speed deliberately
+                // move it away from the finger, so it cannot be used to
+                // pair the contact with raw sensor data or to draw it.
+                // Fall back to the emitted position when the contact is no
+                // longer in the pool (lifted this frame - only its UP
+                // report is left).
+                USHORT sensorX = coreFrame.Contacts[i].X;
+                USHORT sensorY = coreFrame.Contacts[i].Y;
+
+                (VOID)AmtContactPoolFindSensorPos(
+                    pCtx->ActiveContacts,
+                    coreFrame.Contacts[i].ContactID,
+                    &sensorX,
+                    &sensorY);
+
                 liveFrame->Contacts[i].ContactID =
                     coreFrame.Contacts[i].ContactID;
 
-                liveFrame->Contacts[i].X =
-                    coreFrame.Contacts[i].X;
+                liveFrame->Contacts[i].X = sensorX;
 
-                liveFrame->Contacts[i].Y =
-                    coreFrame.Contacts[i].Y;
+                liveFrame->Contacts[i].Y = sensorY;
 
                 liveFrame->Contacts[i].Phase =
                     (ULONG)coreFrame.Contacts[i].Phase;
@@ -516,11 +531,11 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
                      ++j) {
 
                     LONGLONG dx =
-                        (LONGLONG)coreFrame.Contacts[i].X -
+                        (LONGLONG)sensorX -
                         (LONGLONG)rawFrame.Contacts[j].X;
 
                     LONGLONG dy =
-                        (LONGLONG)coreFrame.Contacts[i].Y -
+                        (LONGLONG)sensorY -
                         (LONGLONG)rawFrame.Contacts[j].Y;
 
                     ULONGLONG distance =
@@ -555,12 +570,12 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
                         rawFrame.Contacts[bestRawIndex].Orientation;
                 } else {
                     liveFrame->Contacts[i].RawX =
-                        (SHORT)((LONG)coreFrame.Contacts[i].X +
+                        (SHORT)((LONG)sensorX +
                                 pCtx->DeviceInfo->x.min);
 
                     liveFrame->Contacts[i].RawY =
                         (SHORT)(pCtx->DeviceInfo->y.max -
-                                (LONG)coreFrame.Contacts[i].Y);
+                                (LONG)sensorY);
 
                     liveFrame->Contacts[i].Major = 0;
                     liveFrame->Contacts[i].Minor = 0;

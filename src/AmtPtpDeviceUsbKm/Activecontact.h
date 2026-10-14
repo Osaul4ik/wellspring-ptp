@@ -69,13 +69,27 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
     // Never reused while warm.
     ULONG ContactID;
 
-    // Reported (post deadzone + EMA) position, normalized device units.
+    // Smoothed SENSOR-domain position (post deadzone + EMA of the raw
+    // position), normalized device units. This is the matching/proximity
+    // domain: Match.c, the retap ring and the birth-proximity check all
+    // compare it against raw candidate coordinates, so it must always stay
+    // within smoothing-lag distance of where the finger physically is.
+    // It is NOT what Windows sees - see EmitX/Y below.
     USHORT ReportX;
     USHORT ReportY;
 
-    // Hysteresis/deadzone baseline. Distinct from ReportX/Y (post-EMA).
+    // Hysteresis/deadzone baseline: the last raw position that passed the
+    // deadzone (sensor domain). Distinct from ReportX/Y (post-EMA).
     USHORT HystX;
     USHORT HystY;
+
+    // Windows-facing position: what the PTP report actually carries. It is
+    // integrated from SCALED sensor-domain deltas (scroll scale / cursor
+    // speed), so it intentionally drifts away from ReportX/Y - scaling an
+    // absolute position can only be done by scaling its delta. Never used
+    // for matching.
+    USHORT EmitX;
+    USHORT EmitY;
 
     // TRUE if contact was in >=2-finger frame during ACTIVE lifetime.
     // Causes EMA skip on first solo frame (aliveCountIsOne).
@@ -87,9 +101,11 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
     // Keeps the retap seed from being overwritten on the first sample.
     BOOLEAN RetapSeeded;
 
-    // Carries fractional scroll error across frames within one gesture.
-    LONG ScrollRemX;
-    LONG ScrollRemY;
+    // Fractional remainder (Q32, always in [0, 2^32)) of the scaled delta
+    // that has not yet been emitted, carried across frames so scaling
+    // never loses sub-unit motion (e.g. 0.36x scroll at slow speed).
+    ULONG CarryX;
+    ULONG CarryY;
     LONG ScrollFilteredX;
     LONG ScrollFilteredY;
 
@@ -106,6 +122,13 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
     // Frames this contact has been alive, saturating at 255. NOT an
     // identity/matching hint - purely a diagnostic/age counter.
     UCHAR FramesAlive;
+
+    // TRUE once a TipSwitch=1 report carrying the CURRENT ContactID has
+    // actually been placed in a frame sent to Windows (not merely queued in
+    // the overflow queue, which can drop a stale DOWN). Windows must never
+    // receive an UP for an ID it never saw go down, so lift paths consult
+    // this. Cleared on birth and on identity rebind.
+    BOOLEAN Announced;
 } ACTIVE_CONTACT, *PACTIVE_CONTACT;
 
 // Keep each pool element exactly one 64-byte cache line.
@@ -142,7 +165,11 @@ AmtContactRebindIdentity(
     _Out_   ULONG*          OldContactID
 );
 
-// Birth a contact with a retap-based seed.
+// Birth a contact with a retap-based seed. RecentLiftX/Y is the previous
+// lift in the sensor (matching) domain and seeds the smoothing/deadzone
+// baselines; RecentLiftEmitX/Y is where Windows last saw that contact and
+// seeds the emitted position, so a quick re-tap lands on the same
+// reported spot even when scaling had moved EmitX/Y away from ReportX/Y.
 VOID
 AmtContactBirthWithRetapSmoothing(
     _Inout_ PACTIVE_CONTACT Pool,
@@ -150,6 +177,8 @@ AmtContactBirthWithRetapSmoothing(
     _Inout_ ULONG*          NextContactId,
     _In_    USHORT          RecentLiftX,
     _In_    USHORT          RecentLiftY,
+    _In_    USHORT          RecentLiftEmitX,
+    _In_    USHORT          RecentLiftEmitY,
     _In_    USHORT          slotHint
 );
 
@@ -159,7 +188,25 @@ AmtContactBirthWithRetapSmoothing(
 #define RETAP_WINDOW_100NS      (150LL * 10000LL)  // was 700 ms
 #define RETAP_MAX_DISTANCE      200                 // was 600 (normalized units)
 
-// Lift a contact and return its last state.
+// Look up the sensor-domain position (ReportX/Y - where the finger
+// physically is, NOT what Windows was told) of the live contact that carries
+// ContactID. Returns FALSE (outputs untouched) when no such contact is in the
+// pool - e.g. a contact that was lifted this frame. Read-only; used by the
+// live monitor so it can pair emitted contacts with raw sensor data and draw
+// the real finger position even while scroll scale / cursor speed make the
+// emitted position drift.
+BOOLEAN
+AmtContactPoolFindSensorPos(
+    _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT* Pool,
+    _In_  ULONG   ContactID,
+    _Out_ USHORT* SensorX,
+    _Out_ USHORT* SensorY
+);
+
+// Lift a contact and return its last state. OldX/OldY is the last position
+// Windows saw (EmitX/Y), i.e. the right place for the UP report. Callers
+// that need the sensor-domain position (retap bookkeeping) must read
+// ReportX/Y BEFORE calling - the slot is zeroed here.
 VOID
 AmtContactKill(
     _Inout_ PACTIVE_CONTACT Pool,
@@ -210,7 +257,9 @@ AmtContactUpdate(
     _In_    const AMT_SCROLL_CONFIG* ScrollConfig,
     _In_    const AMT_POINTER_RUNTIME* PointerRuntime,
     _In_    const AMT_SCROLL_RUNTIME* ScrollRuntime,
-    _Out_   USHORT*         OutX,
+    _In_    USHORT          PadMaxX,   // normalized pad extent: 0..PadMax
+    _In_    USHORT          PadMaxY,
+    _Out_   USHORT*         OutX,      // Windows-facing (EmitX/Y), clamped to the pad
     _Out_   USHORT*         OutY
 );
 

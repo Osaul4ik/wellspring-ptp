@@ -176,6 +176,24 @@ AmtContactAssignId(_Inout_ ULONG* NextContactId)
     return id;
 }
 
+BOOLEAN
+AmtContactPoolFindSensorPos(
+    _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT* Pool,
+    _In_  ULONG   ContactID,
+    _Out_ USHORT* SensorX,
+    _Out_ USHORT* SensorY
+)
+{
+    for (size_t i = 0; i < MAX_CONTACTS; i++) {
+        if (Pool[i].State != CONTACT_FREE && Pool[i].ContactID == ContactID) {
+            *SensorX = Pool[i].ReportX;
+            *SensorY = Pool[i].ReportY;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 VOID
 AmtContactPoolInit(_Out_writes_(MAX_CONTACTS) PACTIVE_CONTACT Pool)
 {
@@ -200,6 +218,8 @@ AmtContactBirthCommon(
     _Inout_ ULONG*          NextContactId,
     _In_    USHORT          x,
     _In_    USHORT          y,
+    _In_    USHORT          emitX,
+    _In_    USHORT          emitY,
     _In_    USHORT          slotHint,
     _In_    BOOLEAN         retapSeeded
 )
@@ -210,11 +230,14 @@ AmtContactBirthCommon(
     c->ReportY            = y;
     c->HystX              = x;
     c->HystY              = y;
+    c->EmitX              = emitX;
+    c->EmitY              = emitY;
     c->WasInGesture       = FALSE;
     c->PendingFirstSample = TRUE;
     c->RetapSeeded        = retapSeeded;
-    c->ScrollRemX          = 0;
-    c->ScrollRemY          = 0;
+    c->CarryX              = 0;
+    c->CarryY              = 0;
+    c->Announced           = FALSE;
     c->ScrollFilteredX     = 0;
     c->ScrollFilteredY     = 0;
     c->LastSlotHint        = slotHint;
@@ -241,7 +264,7 @@ AmtContactBirth(
     NT_ASSERT(c->State == CONTACT_FREE);
 #endif
 
-    AmtContactBirthCommon(c, NextContactId, x, y, slotHint, /* retapSeeded */ FALSE);
+    AmtContactBirthCommon(c, NextContactId, x, y, x, y, slotHint, /* retapSeeded */ FALSE);
 }
 
 // Seeds EMA baseline so the cursor doesn't jump on re-tap.
@@ -252,6 +275,8 @@ AmtContactBirthWithRetapSmoothing(
     _Inout_ ULONG*          NextContactId,
     _In_    USHORT          RecentLiftX,
     _In_    USHORT          RecentLiftY,
+    _In_    USHORT          RecentLiftEmitX,
+    _In_    USHORT          RecentLiftEmitY,
     _In_    USHORT          slotHint
 )
 {
@@ -261,7 +286,8 @@ AmtContactBirthWithRetapSmoothing(
     NT_ASSERT(c->State == CONTACT_FREE);
 #endif
 
-    AmtContactBirthCommon(c, NextContactId, RecentLiftX, RecentLiftY, slotHint,
+    AmtContactBirthCommon(c, NextContactId, RecentLiftX, RecentLiftY,
+                           RecentLiftEmitX, RecentLiftEmitY, slotHint,
                            /* retapSeeded */ TRUE); // preserve seed on first update
 }
 
@@ -280,9 +306,11 @@ AmtContactKill(
     NT_ASSERT(c->State == CONTACT_ACTIVE || c->State == CONTACT_GRACE);
 #endif
 
+    // Windows-facing position: the UP must land where Windows last saw
+    // this contact, not at the sensor-domain smoothed position.
     *OldContactID = c->ContactID;
-    *OldX         = c->ReportX;
-    *OldY         = c->ReportY;
+    *OldX         = c->EmitX;
+    *OldY         = c->EmitY;
 
     RtlZeroMemory(c, sizeof(ACTIVE_CONTACT));
 }
@@ -304,6 +332,7 @@ AmtContactRebindIdentity(
 
     *OldContactID = c->ContactID;
     c->ContactID  = AmtContactAssignId(NextContactId);
+    c->Announced  = FALSE; // the new identity has not been reported yet
 }
 
 VOID
@@ -322,8 +351,8 @@ AmtContactEnterGrace(
 #endif
 
     *OldContactID = c->ContactID;
-    *OldX         = c->ReportX;
-    *OldY         = c->ReportY;
+    *OldX         = c->EmitX;
+    *OldY         = c->EmitY;
 
     c->State = CONTACT_GRACE;
 }
@@ -358,6 +387,45 @@ AmtContactEvaluateDeadzone(
     return (dx >= ThresholdUnits) || (dy >= ThresholdUnits);
 }
 
+// Scale a sensor-domain delta by a Q32 factor, carrying the sub-unit
+// remainder so the long-run sum of emitted steps equals scale * sum of raw
+// deltas exactly (no truncation bias, no lost slow motion).
+//
+// The carry is the Q32 fractional part left over after flooring, so it is
+// always in [0, 2^32). Floor (arithmetic shift) rather than round-to-nearest
+// keeps the carry non-negative and the accumulation unbiased for both
+// directions. A factor of exactly 1.0 is the identity and leaves the carry
+// untouched.
+static inline INT
+AmtScaleDeltaWithCarry(
+    _In_    INT       Delta,
+    _In_    LONGLONG  ScaleQ32,
+    _Inout_ ULONG*    Carry
+)
+{
+    if (ScaleQ32 == AMT_RUNTIME_FIXED_ONE)
+        return Delta;
+
+    LONGLONG sum = (LONGLONG)Delta * ScaleQ32 + (LONGLONG)*Carry;
+    INT whole = (INT)(sum >> AMT_RUNTIME_FIXED_SHIFT);
+    *Carry = (ULONG)(sum & 0xFFFFFFFFLL);
+    return whole;
+}
+
+// Clamp to the pad's normalized extent [0, Max]. Scaling by a factor > 1
+// (e.g. the default 1.08x fast-scroll boost) integrates to a position that
+// can run past the pad edge by up to (scale-1) x the distance travelled.
+// The HID descriptor declares a logical maximum, so values beyond it are
+// not something to hand Windows: pin the integrated position to the pad.
+// Clamping the integrator state itself (not just the output) means motion
+// resumes immediately when the finger turns around, instead of first
+// having to "unwind" an invisible overshoot.
+static inline USHORT
+AmtClampToRange(_In_ LONG v, _In_ USHORT Max)
+{
+    return (USHORT)(v < 0 ? 0 : (v > (LONG)Max ? (LONG)Max : v));
+}
+
 static inline VOID
 AmtContactCommitSample(
     _Inout_ PACTIVE_CONTACT Contact,
@@ -371,37 +439,57 @@ AmtContactCommitSample(
     _In_    BOOLEAN         commitIsRetapSeededFirstSample,
     _In_    const AMT_POINTER_RUNTIME* PointerRuntime,
     _In_    const AMT_SCROLL_RUNTIME* ScrollRuntime,
+    _In_    USHORT          padMaxX,
+    _In_    USHORT          padMaxY,
     _Out_   USHORT*         OutX,
     _Out_   USHORT*         OutY
 )
 {
-    USHORT repX, repY;
     BOOLEAN velocityIsSlow = (Velocity == VELOCITY_SLOW);
 
-    if (!passedDeadzone) {
-        repX = Contact->ReportX;
-        repY = Contact->ReportY;
-    } else {
+    if (passedDeadzone) {
+        // Two coordinate domains live side by side here:
+        //
+        //   ReportX/Y  sensor domain  - smoothed raw position, used for
+        //                               matching; always tracks the finger.
+        //   EmitX/Y    Windows domain - integrated from SCALED sensor
+        //                               deltas; what the PTP report carries.
+        //
+        // Scroll scale and cursor speed MUST act on the sensor-domain
+        // delta (movement since the previous committed sample) and be
+        // integrated into EmitX/Y. Scaling the distance to the previous
+        // emitted position instead (the old behaviour) turns the scale
+        // into a first-order filter that converges back to the raw
+        // position: steady-state speed and total displacement stay equal
+        // to the finger's, so the speed settings changed only lag and
+        // overshoot, never the actual distance travelled.
+        //
+        // HystX/Y holds the previous committed raw sample; capture it
+        // before it is overwritten. On a fresh (non-seeded) birth,
+        // AmtContactUpdate has already set it to the candidate, so the
+        // first sample yields a zero delta and the contact is emitted at
+        // its birth position.
+        const INT rawDx = (INT)candX - (INT)Contact->HystX;
+        const INT rawDy = (INT)candY - (INT)Contact->HystY;
+
         Contact->HystX = candX;
         Contact->HystY = candY;
 
-        if (gestureActive) {
-            // Scroll frame: report ReportX/Y + a scaled fraction of the raw
-            // delta, not the raw position itself - baseline for the next
-            // frame's delta is this scaled result, so scaling never
-            // compounds across frames. FAST swipes get a +35% boost over
-            // SLOW/MEDIUM (see SCROLL_SCALE_*_FAST) so a quick fling covers
-            // more distance per frame instead of feeling capped.
-            INT dx = (INT)candX - (INT)Contact->ReportX;
-            INT dy = (INT)candY - (INT)Contact->ReportY;
+        INT stepX, stepY;
+        USHORT newReportX, newReportY;
 
+        if (gestureActive) {
+            // Scroll frame. FAST swipes get a boost over SLOW/MEDIUM
+            // (see FastScaleQ32); both scales apply to the raw delta.
             LONGLONG scaleQ32 = (Velocity == VELOCITY_FAST)
                           ? ScrollRuntime->FastScaleQ32
                           : ScrollRuntime->BaseScaleQ32;
-            INT scaledDx = AmtMulQ32Round(dx, scaleQ32);
-            INT scaledDy = AmtMulQ32Round(dy, scaleQ32);
+
+            INT scaledDx = AmtScaleDeltaWithCarry(rawDx, scaleQ32, &Contact->CarryX);
+            INT scaledDy = AmtScaleDeltaWithCarry(rawDy, scaleQ32, &Contact->CarryY);
 
             if (ScrollRuntime->SmoothingAlphaQ32 != AMT_RUNTIME_FIXED_ONE) {
+                // Smooth the emitted per-frame step (a velocity filter).
                 LONGLONG alphaQ32 = ScrollRuntime->SmoothingAlphaQ32;
                 LONGLONG prevQ32 = AMT_RUNTIME_FIXED_ONE - alphaQ32;
                 LONGLONG mixX = (LONGLONG)scaledDx * alphaQ32 +
@@ -414,50 +502,50 @@ AmtContactCommitSample(
             Contact->ScrollFilteredX = scaledDx;
             Contact->ScrollFilteredY = scaledDy;
 
-            LONG newX = (LONG)Contact->ReportX + scaledDx;
-            LONG newY = (LONG)Contact->ReportY + scaledDy;
+            stepX = scaledDx;
+            stepY = scaledDy;
 
-            // Clamp both ends before truncating to USHORT.
-            repX = (USHORT)(newX < 0 ? 0 : (newX > 0xFFFF ? 0xFFFF : newX));
-            repY = (USHORT)(newY < 0 ? 0 : (newY > 0xFFFF ? 0xFFFF : newY));
+            // The sensor-domain position follows the finger exactly while
+            // scrolling, so matching and the birth-proximity check keep
+            // working in the sensor domain regardless of the scroll scale.
+            newReportX = candX;
+            newReportY = candY;
         } else {
-            // Retap-seeded first sample always eases in from the seed
-            // (no real dt to measure velocity from yet - see
+            // Cursor frame. Retap-seeded first sample always eases in from
+            // the seed (no real dt to measure velocity from yet - see
             // AmtContactUpdate). Everything else blends by the continuous
             // alpha the caller computed from measured velocity: heaviest
             // smoothing near-stationary, ramping linearly to a
             // bit-identical raw passthrough by the configured fast velocity.
-            // Replaces the old hard SLOW/MEDIUM/FAST switch, which only
-            // ever reported a fixed 3/8 blend or exactly raw with nothing
-            // between - a deliberate slow move sitting right at the
-            // threshold speed could flip frame-to-frame between the two.
             INT userAlpha = PointerRuntime->CursorSmoothingAlphaNum;
             INT effAlpha = commitIsRetapSeededFirstSample ? PointerRuntime->CursorSmoothingAlphaNumSlow :
                            ((alphaNum < userAlpha) ? alphaNum : userAlpha);
 
-            repX = AmtContactSmoothCoord(candX, Contact->ReportX, effAlpha,
-                                         PointerRuntime->CursorSmoothingAlphaDen,
-                                         PointerRuntime->CursorSmoothingInvAlphaDenQ32);
-            repY = AmtContactSmoothCoord(candY, Contact->ReportY, effAlpha,
-                                         PointerRuntime->CursorSmoothingAlphaDen,
-                                         PointerRuntime->CursorSmoothingInvAlphaDenQ32);
+            // EMA in the sensor domain (against the smoothed sensor
+            // position, not the emitted one).
+            newReportX = AmtContactSmoothCoord(candX, Contact->ReportX, effAlpha,
+                                               PointerRuntime->CursorSmoothingAlphaDen,
+                                               PointerRuntime->CursorSmoothingInvAlphaDenQ32);
+            newReportY = AmtContactSmoothCoord(candY, Contact->ReportY, effAlpha,
+                                               PointerRuntime->CursorSmoothingAlphaDen,
+                                               PointerRuntime->CursorSmoothingInvAlphaDenQ32);
 
-            if (PointerRuntime->CursorSpeedQ32 != AMT_RUNTIME_FIXED_ONE) {
-                INT moveX = (INT)repX - (INT)Contact->ReportX;
-                INT moveY = (INT)repY - (INT)Contact->ReportY;
-                LONG nextX = (LONG)Contact->ReportX +
-                              (LONG)AmtMulQ32Round(moveX, PointerRuntime->CursorSpeedQ32);
-                LONG nextY = (LONG)Contact->ReportY +
-                              (LONG)AmtMulQ32Round(moveY, PointerRuntime->CursorSpeedQ32);
-                repX = (USHORT)(nextX < 0 ? 0 : (nextX > 0xFFFF ? 0xFFFF : nextX));
-                repY = (USHORT)(nextY < 0 ? 0 : (nextY > 0xFFFF ? 0xFFFF : nextY));
-            }
+            // Cursor speed scales the smoothed sensor-domain step. At 100%
+            // this is the identity, so EmitX/Y == ReportX/Y exactly as
+            // before the split.
+            stepX = AmtScaleDeltaWithCarry((INT)newReportX - (INT)Contact->ReportX,
+                                           PointerRuntime->CursorSpeedQ32, &Contact->CarryX);
+            stepY = AmtScaleDeltaWithCarry((INT)newReportY - (INT)Contact->ReportY,
+                                           PointerRuntime->CursorSpeedQ32, &Contact->CarryY);
 
-            Contact->ScrollRemX = 0;
-            Contact->ScrollRemY = 0;
             Contact->ScrollFilteredX = 0;
             Contact->ScrollFilteredY = 0;
         }
+
+        Contact->EmitX = AmtClampToRange((LONG)Contact->EmitX + stepX, padMaxX);
+        Contact->EmitY = AmtClampToRange((LONG)Contact->EmitY + stepY, padMaxY);
+        Contact->ReportX = newReportX;
+        Contact->ReportY = newReportY;
 
         // Taint-clear rule unchanged from the old scheme: a contact that
         // was part of a gesture stays tainted through slow/ambiguous solo
@@ -471,13 +559,11 @@ AmtContactCommitSample(
         }
     }
 
-    Contact->ReportX = repX;
-    Contact->ReportY = repY;
     Contact->PendingFirstSample = FALSE;
     Contact->RetapSeeded        = FALSE; // seed consumed exactly once
 
-    *OutX = repX;
-    *OutY = repY;
+    *OutX = Contact->EmitX;
+    *OutY = Contact->EmitY;
 }
 
 VOID
@@ -497,6 +583,8 @@ AmtContactUpdate(
     _In_    const AMT_SCROLL_CONFIG* ScrollConfig,
     _In_    const AMT_POINTER_RUNTIME* PointerRuntime,
     _In_    const AMT_SCROLL_RUNTIME* ScrollRuntime,
+    _In_    USHORT          PadMaxX,
+    _In_    USHORT          PadMaxY,
     _Out_   USHORT*         OutX,
     _Out_   USHORT*         OutY
 )
@@ -552,6 +640,7 @@ AmtContactUpdate(
                            gestureActive, velocity,
                            alphaNum, retapSeededFirstSample,
                            PointerRuntime, ScrollRuntime,
+                           PadMaxX, PadMaxY,
                            OutX, OutY);
 
     Contact->LastSlotHint = slotHint;

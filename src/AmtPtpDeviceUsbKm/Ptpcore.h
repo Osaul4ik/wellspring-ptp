@@ -90,14 +90,23 @@ PTPCore_ProcessFrame(
 #define CLICK_ARBITRATION_TIMEOUT_MS 90
 
 // MICRO-OPT: fields ordered widest-first (LONGLONG before the USHORTs
-// before the BOOLEAN) - was 24 bytes (7 bytes internal pad before LiftQpc
-// + 4 trailing), now 16 (3 trailing only). Read via field names only
-// everywhere (Ptpcore.c/Activecontact.c), no layout-dependent code.
+// before the BOOLEAN). Read via field names only everywhere
+// (Ptpcore.c/Activecontact.c), no layout-dependent code.
+//
+// Two positions are kept per lift because scroll scale / cursor speed make
+// the Windows-facing position drift away from the sensor position:
+//   X/Y          sensor domain (smoothed raw) - proximity test against raw
+//                candidates in AmtRecentLiftFindNearby.
+//   EmitX/EmitY  where Windows last saw the contact - seeds the re-tapped
+//                contact so a quick second tap lands on the same reported
+//                spot.
 typedef struct _RECENT_LIFT
 {
     LONGLONG LiftQpc;
     USHORT   X;
     USHORT   Y;
+    USHORT   EmitX;
+    USHORT   EmitY;
     BOOLEAN  Valid;
 } RECENT_LIFT;
 
@@ -112,7 +121,9 @@ AmtRecentLiftRecord(
     _Inout_ RECENT_LIFT_RING* Ring,
     _In_    LONGLONG          NowQpc,
     _In_    USHORT            X,
-    _In_    USHORT            Y
+    _In_    USHORT            Y,
+    _In_    USHORT            EmitX,
+    _In_    USHORT            EmitY
 );
 
 // Find closest lift to (CandX, CandY). FALSE -> raw birth.
@@ -127,8 +138,10 @@ AmtRecentLiftFindNearby(
     _In_  LONGLONG                WindowTicks,
     _In_  USHORT                  CandX,
     _In_  USHORT                  CandY,
-    _Out_ USHORT*                 OutX,
-    _Out_ USHORT*                 OutY
+    _Out_ USHORT*                 OutX,      // lift, sensor domain
+    _Out_ USHORT*                 OutY,
+    _Out_ USHORT*                 OutEmitX,  // lift, Windows-facing
+    _Out_ USHORT*                 OutEmitY
 );
 
 EXTERN_C_END

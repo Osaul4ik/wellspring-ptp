@@ -4,8 +4,8 @@
 #include "Match.h"
 #include "Palm.h"
 
-// Max per-frame finger movement. Shared with tip-drop anchor search.
-#define MATCH_MAX_CONTINUATION_DELTA 4000
+// MATCH_MAX_CONTINUATION_DELTA (per-frame movement bound, shared with the
+// tip-drop anchor search) and MATCH_BIRTH_PROXIMITY_DELTA live in Match.h.
 
 // Must match MATCH_MAX_CONTINUATION_DELTA to prevent false Confidence=1
 // on fast-but-light drags (soft-drift confidence bug fix).
@@ -41,7 +41,13 @@ AmtMatchShapeDistance(
 // raw position? Used instead of the firmware Origin==0 flag, which proved
 // unreliable on some T2 firmware (never/rarely resets to 0 on a genuine
 // new touch, silently defeating the edge-zone hard reject in Palm.c).
-// Same distance semantics as the bridging search below, for consistency.
+// Uses the dedicated, much smaller MATCH_BIRTH_PROXIMITY_DELTA - NOT the
+// continuation delta used by the bridging search below: a radius that
+// spans a third of the pad made any new touch within reach of another
+// finger count as "not a birth", defeating the edge hard reject.
+// Pool ReportX/Y is the smoothed SENSOR-domain position (the emitted,
+// scaled position lives in EmitX/Y), so this compares like with like even
+// while scroll scale / cursor speed move the emitted position away.
 static BOOLEAN
 AmtMatchHasNearbyActiveContact(
     _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT* Pool,
@@ -57,8 +63,8 @@ AmtMatchHasNearbyActiveContact(
         INT dxAbs = AmtAbsDelta(RcX, (INT)poolEntry->ReportX);
         INT dyAbs = AmtAbsDelta(RcY, (INT)poolEntry->ReportY);
 
-        if (dxAbs <= MATCH_MAX_CONTINUATION_DELTA &&
-            dyAbs <= MATCH_MAX_CONTINUATION_DELTA)
+        if (dxAbs <= MATCH_BIRTH_PROXIMITY_DELTA &&
+            dyAbs <= MATCH_BIRTH_PROXIMITY_DELTA)
             return TRUE;
     }
     return FALSE;

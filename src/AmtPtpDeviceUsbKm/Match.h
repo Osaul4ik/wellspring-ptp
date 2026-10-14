@@ -75,6 +75,24 @@ AmtMatchBuildCandidates(
     _Out_ BOOLEAN*                                 LargePalmDetected
 );
 
+// Max per-frame finger movement for continuation/bridging, in normalized
+// sensor units. Deliberately generous (several fast frames' worth, and it
+// also bounds how far a frozen edge-zone contact may wander before it is
+// no longer associated with its palm-local candidate). Shared by Match.c
+// (correspondence, tip-drop bridging) and Ptpcore.c (edge-zone freeze).
+#define MATCH_MAX_CONTINUATION_DELTA 4000
+
+// "Is a finger already tracked right here?" radius for the geometric
+// birth test that feeds the edge-zone hard reject in AmtPalmClassify.
+// Separate from (and much smaller than) the continuation delta: that one
+// spans ~30-40% of the pad width, which made almost any new touch look
+// like a continuation of some other finger and so silently bypassed the
+// edge hard reject whenever a finger was already down. This only needs to
+// cover the real per-frame travel of one finger plus a few dropped
+// frames (~1.5 cm at ~1000 units/cm on current models). Engineering
+// estimate - validate with the live monitor and adjust if needed.
+#define MATCH_BIRTH_PROXIMITY_DELTA 1500
+
 // Max time gap for same-ContactID continuation (150ms).
 #define MATCH_MAX_TIME_DELTA_100NS (150LL * 10000LL)
 
