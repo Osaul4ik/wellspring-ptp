@@ -8,6 +8,16 @@ EXTERN_C_START
 
 typedef enum { PALM_NONE = 0, PALM_LOCAL = 1, PALM_LARGE = 2 } PALM_CLASS;
 
+// Once a large palm has been seen, PTPCore keeps suppressing the pad (the
+// palm's remains look like fingers as its shape breaks up) for as long as
+// any contact is still near where the palm was; the anchor follows the
+// nearest contact frame to frame. When nothing is left within this radius
+// (sensor units, ~a quarter to a third of the pad width) the palm is gone
+// and fingers elsewhere resume - instead of staying frozen until EVERY
+// contact, however far away, has lifted. Engineering estimate; validate
+// with real palm captures.
+#define PALM_LATCH_RELEASE_RADIUS 3000
+
 typedef struct _AMT_PALM_RUNTIME
 {
     LONGLONG EdgeFactorTopQ32;

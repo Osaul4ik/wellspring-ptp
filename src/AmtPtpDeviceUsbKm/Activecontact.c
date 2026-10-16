@@ -238,6 +238,8 @@ AmtContactBirthCommon(
     c->CarryX              = 0;
     c->CarryY              = 0;
     c->Announced           = FALSE;
+    c->SoloMs              = 0;
+    c->HystAgeTicks        = 0;
     c->ScrollFilteredX     = 0;
     c->ScrollFilteredY     = 0;
     c->LastSlotHint        = slotHint;
@@ -547,15 +549,15 @@ AmtContactCommitSample(
         Contact->ReportX = newReportX;
         Contact->ReportY = newReportY;
 
-        // Taint-clear rule unchanged from the old scheme: a contact that
-        // was part of a gesture stays tainted through slow/ambiguous solo
-        // movement, and only clears on a decisively fast frame (or a
-        // gesture frame, or a retap-seeded one) - see the WasInGesture
-        // comment in Activecontact.h.
-        if (gestureActive || (!commitIsRetapSeededFirstSample && !velocityIsSlow)) {
-            if (Contact->WasInGesture && aliveCountIsOne) {
-                Contact->WasInGesture = FALSE;
-            }
+        // A tainted contact that moves decisively (non-slow) while it is the
+        // only finger down is no longer part of a gesture. (The check used
+        // to also read "|| gestureActive", which could never fire here:
+        // gestureActive means >=2 fingers, aliveCountIsOne means exactly 1.)
+        // Contacts that never move decisively are released by the solo-time
+        // expiry in AmtContactUpdate instead. A retap-seeded first sample
+        // has no real velocity yet and never clears.
+        if (aliveCountIsOne && !commitIsRetapSeededFirstSample && !velocityIsSlow) {
+            Contact->WasInGesture = FALSE;
         }
     }
 
@@ -602,6 +604,25 @@ AmtContactUpdate(
     LONGLONG prevQpc  = Contact->LastSeenQpc;
     LONGLONG dtTicks  = (prevQpc == 0) ? 0 : (nowQpc - prevQpc);
 
+    // Time basis for velocity: how long the distance-from-anchor (HystX/Y)
+    // has been building up, i.e. frames since the anchor was last committed
+    // plus this frame - not just this frame (see AMT_VELOCITY_WINDOW_MS).
+    // Identical to dtTicks whenever the anchor was committed last frame.
+    const LONGLONG windowTicks = (PerfFrequencyHz > 0)
+        ? (PerfFrequencyHz * AMT_VELOCITY_WINDOW_MS) / 1000 : 0;
+    LONGLONG velocityDtTicks = dtTicks;
+    if (dtTicks > 0 && windowTicks > 0) {
+        LONGLONG span = dtTicks + (LONGLONG)Contact->HystAgeTicks;
+        if (span > windowTicks) {
+            // Only the stale part of the anchor's age is bounded. A single
+            // frame gap longer than the window (dropped frames, USB stall)
+            // is real elapsed time and is never shortened - capping below
+            // dtTicks would overstate the speed.
+            span = (dtTicks > windowTicks) ? dtTicks : windowTicks;
+        }
+        velocityDtTicks = span;
+    }
+
     // Scroll gestures classify FAST against their own threshold, decoupled
     // from single-finger cursor movement below. Alpha is only meaningful
     // on the non-gesture path (see AmtContactCommitSample) - it's still
@@ -612,7 +633,7 @@ AmtContactUpdate(
     LONGLONG alphaFastThreshold = PointerConfig->CursorFastVelocity;
     INT alphaNum;
     CONTACT_VELOCITY_BUCKET velocity = AmtContactEvaluateVelocity(
-        rawX, rawY, Contact->HystX, Contact->HystY, dtTicks, PerfFrequencyHz,
+        rawX, rawY, Contact->HystX, Contact->HystY, velocityDtTicks, PerfFrequencyHz,
         fastThreshold, slowThreshold, alphaFastThreshold,
         PointerRuntime,
         (BOOLEAN)!gestureActive,
@@ -642,6 +663,32 @@ AmtContactUpdate(
                            PointerRuntime, ScrollRuntime,
                            PadMaxX, PadMaxY,
                            OutX, OutY);
+
+    // Anchor age: reset when the anchor moved (this includes a birth, where
+    // it is seeded), otherwise it keeps growing, bounded by the window.
+    if (passed) {
+        Contact->HystAgeTicks = 0;
+    } else if (dtTicks > 0 && windowTicks > 0) {
+        LONGLONG age = (LONGLONG)Contact->HystAgeTicks + dtTicks;
+        if (age > windowTicks)
+            age = windowTicks;
+        Contact->HystAgeTicks = (ULONG)age;
+    }
+
+    // Gesture-taint expiry: a contact that has been the only finger down
+    // for AMT_GESTURE_TAINT_EXPIRY_MS is no longer part of a gesture, even
+    // if it never moved decisively. Any >=2-finger frame restarts the clock.
+    if (aliveCountIsOne) {
+        if (dtTicks > 0 && PerfFrequencyHz > 0) {
+            LONGLONG addMs = (dtTicks * 1000 + PerfFrequencyHz / 2) / PerfFrequencyHz;
+            LONGLONG ms = (LONGLONG)Contact->SoloMs + addMs;
+            Contact->SoloMs = (USHORT)(ms > 0xFFFF ? 0xFFFF : ms);
+        }
+        if (Contact->WasInGesture && Contact->SoloMs >= AMT_GESTURE_TAINT_EXPIRY_MS)
+            Contact->WasInGesture = FALSE;
+    } else {
+        Contact->SoloMs = 0;
+    }
 
     Contact->LastSlotHint = slotHint;
     Contact->LastSeenQpc  = nowQpc;

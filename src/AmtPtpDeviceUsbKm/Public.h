@@ -31,7 +31,18 @@ typedef struct _AMT_PALM_CONFIG
     ULONG PalmMinMajor;     // below this AND PalmMinMinor -> never palm (early out)
     ULONG PalmMinMinor;
 
-    ULONG Reserved[4];      // future growth, keep struct size stable
+    // What happens to the pad once a large palm has been seen (PTPCore's
+    // palm latch):
+    //   0 (default) - the pad stays locked until EVERY contact has left it:
+    //                 the touchpad does not work while the palm is on it.
+    //   1           - the lock is released as soon as nothing is left near
+    //                 the palm, so fingers elsewhere on the pad resume even
+    //                 though they never lifted.
+    // Takes one of the former Reserved slots, so the struct size/layout and
+    // AMT_PALM_CONFIG_VERSION are unchanged; old software writes 0 here.
+    ULONG PalmLockReleaseWhenGone;
+
+    ULONG Reserved[3];      // future growth, keep struct size stable
 } AMT_PALM_CONFIG, *PAMT_PALM_CONFIG;
 
 #define AMT_PALM_CONFIG_VERSION 1
@@ -51,7 +62,8 @@ typedef struct _AMT_PALM_CONFIG
     /* PalmScoreThresh     */ 55,                                           \
     /* PalmMinMajor        */ 80,                                           \
     /* PalmMinMinor        */ 40,                                           \
-    /* Reserved            */ { 0, 0, 0, 0 }                                \
+    /* PalmLockReleaseWhenGone */ 0,                                        \
+    /* Reserved            */ { 0, 0, 0 }                                   \
 }
 
 // Sane clamp range for the GUI/driver to enforce on every field except

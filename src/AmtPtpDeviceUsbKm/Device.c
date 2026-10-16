@@ -1507,6 +1507,11 @@ AmtPtpEvtDeviceD0Entry(
     pDeviceContext->NextContactId        = 0;
     pDeviceContext->OverflowCount        = 0;
     pDeviceContext->PrevButtonClicked    = FALSE;
+    // A palm latch from the previous power session must not survive the
+    // reset of the contact pool it was suppressing.
+    pDeviceContext->PalmDetected         = FALSE;
+    pDeviceContext->PalmAnchorX          = 0;
+    pDeviceContext->PalmAnchorY          = 0;
     pDeviceContext->ForceTouchAnchorValid = FALSE;
     pDeviceContext->ForceTouchDragLockout = FALSE;
     // Drop pending/in-flight force-touch clicks from the previous power

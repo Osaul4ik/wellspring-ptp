@@ -186,6 +186,8 @@ AmtPalmConfigClamp(_Inout_ PAMT_PALM_CONFIG Config)
     Config->PalmMinMajor    = AmtClampULong(Config->PalmMinMajor,   0, AMT_PALM_MAJOR_MAX);
     Config->PalmMinMinor    = AmtClampULong(Config->PalmMinMinor,   0, AMT_PALM_MAJOR_MAX);
 
+    Config->PalmLockReleaseWhenGone = Config->PalmLockReleaseWhenGone ? 1 : 0;
+
     RtlZeroMemory(Config->Reserved, sizeof(Config->Reserved));
 }
 
@@ -338,6 +340,7 @@ AmtPalmConfigLoadFromRegistry(
     AmtRegistryReadDword(key, AMT_REG_VALUE_SCORE_THRESH, &Config->PalmScoreThresh);
     AmtRegistryReadDword(key, AMT_REG_VALUE_MIN_MAJOR,    &Config->PalmMinMajor);
     AmtRegistryReadDword(key, AMT_REG_VALUE_MIN_MINOR,    &Config->PalmMinMinor);
+    AmtRegistryReadDword(key, AMT_REG_VALUE_PALM_LOCK_RELEASE, &Config->PalmLockReleaseWhenGone);
 
     WdfRegistryClose(key);
 
@@ -376,6 +379,7 @@ AmtPalmConfigSaveToRegistry(
     AmtRegistryWriteDword(key, AMT_REG_VALUE_SCORE_THRESH, Config->PalmScoreThresh);
     AmtRegistryWriteDword(key, AMT_REG_VALUE_MIN_MAJOR,    Config->PalmMinMajor);
     AmtRegistryWriteDword(key, AMT_REG_VALUE_MIN_MINOR,    Config->PalmMinMinor);
+    AmtRegistryWriteDword(key, AMT_REG_VALUE_PALM_LOCK_RELEASE, Config->PalmLockReleaseWhenGone);
 
     WdfRegistryClose(key);
 }

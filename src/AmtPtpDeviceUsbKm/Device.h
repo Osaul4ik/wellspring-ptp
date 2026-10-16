@@ -277,8 +277,12 @@ typedef struct _DEVICE_CONTEXT
     // Running scan-time counter for the PTP report.
     ULONG ScanTimeAccumulator;
 
-    // Session-level palm latch used by PTPCore.
+    // Session-level palm latch used by PTPCore, and where the palm is (the
+    // latch is released once no contact remains near this point - see
+    // PALM_LATCH_RELEASE_RADIUS in Palm.h).
     BOOLEAN PalmDetected;
+    USHORT  PalmAnchorX;
+    USHORT  PalmAnchorY;
 
     // Contact pool for PTPCore and ActiveContact. Allocated separately
     // (not embedded) and manually aligned to 64 bytes in

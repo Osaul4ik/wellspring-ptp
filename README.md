@@ -35,7 +35,8 @@ The GUI exposes:
 * major/minor contact thresholds;
 * palm shape ratio;
 * palm score threshold;
-* minimum contact dimensions.
+* minimum contact dimensions;
+* palm lock policy: by default, once a large palm is detected the touchpad stays disabled until the pad is completely empty; optionally the lock is released as soon as the palm itself has left, so fingers that are still on the pad elsewhere resume.
 The configuration is shared through a stable public configuration structure and IOCTL interface.
 
 ## Force Touch / Emu Force Touch
@@ -215,5 +216,4 @@ This project is based on the excellent work of the original **mac-precision-touc
 ---
 
 # License
-
 * USB driver — GPL v2

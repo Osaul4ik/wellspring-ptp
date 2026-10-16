@@ -26,7 +26,16 @@ namespace AmtPtpConfigGui.Native
         public uint PalmMinMajor;
         public uint PalmMinMinor;
 
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+        /// <summary>
+        /// 0 (default): once a large palm is detected the pad stays locked
+        /// until every contact has left it. 1: the lock is released as soon
+        /// as nothing is left near the palm, so fingers elsewhere resume.
+        /// Occupies one of the former Reserved slots, so the layout and
+        /// CurrentVersion are unchanged.
+        /// </summary>
+        public uint PalmLockReleaseWhenGone;
+
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
         public uint[] Reserved;
 
         public const uint CurrentVersion = 1;
@@ -54,7 +63,8 @@ namespace AmtPtpConfigGui.Native
             PalmScoreThresh = 55,
             PalmMinMajor = 80,
             PalmMinMinor = 40,
-            Reserved = new uint[4],
+            PalmLockReleaseWhenGone = 0,
+            Reserved = new uint[3],
         };
 
         public PalmConfig Clamped()
@@ -70,7 +80,11 @@ namespace AmtPtpConfigGui.Native
             c.PalmScoreThresh = Clamp(c.PalmScoreThresh, 1, ScoreMax);
             c.PalmMinMajor = Clamp(c.PalmMinMajor, 0, MajorMax);
             c.PalmMinMinor = Clamp(c.PalmMinMinor, 0, MajorMax);
-            c.Reserved ??= new uint[4];
+            c.PalmLockReleaseWhenGone = c.PalmLockReleaseWhenGone != 0 ? 1u : 0u;
+            // Always a fresh zeroed array of the marshaled size: a profile
+            // saved before PalmLockReleaseWhenGone existed carries a
+            // 4-element Reserved array, which would not fit SizeConst = 3.
+            c.Reserved = new uint[3];
             return c;
         }
 

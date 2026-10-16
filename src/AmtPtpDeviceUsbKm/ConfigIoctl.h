@@ -37,6 +37,7 @@ EXTERN_C_START
 #define AMT_REG_VALUE_SCORE_THRESH L"PalmScoreThresh"
 #define AMT_REG_VALUE_MIN_MAJOR    L"PalmMinMajor"
 #define AMT_REG_VALUE_MIN_MINOR    L"PalmMinMinor"
+#define AMT_REG_VALUE_PALM_LOCK_RELEASE L"PalmLockReleaseWhenGone"
 
 // Registry value names for AMT_POINTER_CONFIG, same "one REG_DWORD each"
 // convention as the palm values above.

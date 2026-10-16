@@ -1284,6 +1284,20 @@
                         </StackPanel>
                     </GroupBox>
 
+                    <GroupBox>
+                        <GroupBox.Header>
+                            <StackPanel>
+                                <TextBlock Text="Palm lock" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="LARGE PALM" Style="{StaticResource SectionCaption}"/>
+                            </StackPanel>
+                        </GroupBox.Header>
+                        <StackPanel>
+                            <CheckBox x:Name="ChkPalmLockRelease" Style="{StaticResource OptionCheckBox}" Margin="0,4,0,4" Content="Release the lock when the palm leaves" Checked="Slider_Changed" Unchecked="Slider_Changed" ToolTip="Off (default): after a large palm is detected the touchpad stays disabled until every finger has left the pad. On: the lock is released as soon as nothing is left near the palm, so fingers that are still on the pad elsewhere keep working."/>
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Off: the touchpad does not work while a palm is on it, and stays off until the pad is completely empty. On: it resumes as soon as the palm is gone, even if another finger never lifted."/>
+                        </StackPanel>
+                    </GroupBox>
+
 
 
                 </StackPanel>

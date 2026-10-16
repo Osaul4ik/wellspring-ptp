@@ -80,10 +80,14 @@ AmtMatchBuildCandidates(
     _In_  BOOLEAN                                   SupportsForceTouch,
     _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT* Pool,
     _Out_ MATCH_CANDIDATE_SET*                     OutCandidates,
-    _Out_ BOOLEAN*                                 LargePalmDetected
+    _Out_ BOOLEAN*                                 LargePalmDetected,
+    _Out_ USHORT*                                  LargePalmX,
+    _Out_ USHORT*                                  LargePalmY
 )
 {
     *LargePalmDetected = FALSE;
+    *LargePalmX = 0;
+    *LargePalmY = 0;
 
     // OPTIMIZATION: was RtlZeroMemory(OutCandidates, sizeof(MATCH_CANDIDATE_SET))
     // - zeroing all PTP_MAX_CONTACT_POINTS Candidates[] slots every frame.
@@ -163,6 +167,8 @@ AmtMatchBuildCandidates(
 
         if (palm == PALM_LARGE) {
             *LargePalmDetected = TRUE;
+            *LargePalmX = rc->X;
+            *LargePalmY = rc->Y;
             OutCandidates->Count = 0; // blank whole pad
             return;
         }

@@ -282,11 +282,12 @@ PTPCore_ProcessFrame(
 
     MATCH_CANDIDATE_SET candidates;
     BOOLEAN              largePalm = FALSE;
+    USHORT               largePalmX = 0, largePalmY = 0;
 
     AmtMatchBuildCandidates(RawFrame, pCtx->DeviceInfo, &pCtx->PalmConfig,
                             &pCtx->PalmRuntime, &pCtx->PointerConfig,
                             pCtx->SupportsForceTouch, pCtx->ActiveContacts,
-                            &candidates, &largePalm);
+                            &candidates, &largePalm, &largePalmX, &largePalmY);
 
     // Palm session: suppress candidates when palm active. Contacts that go
     // unmatched purely because of this suppression are NOT lifted (see
@@ -296,11 +297,56 @@ PTPCore_ProcessFrame(
 
     if (largePalm) {
         pCtx->PalmDetected = TRUE;
+        pCtx->PalmAnchorX  = largePalmX;
+        pCtx->PalmAnchorY  = largePalmY;
         OutResult->LargePalmBlanked = TRUE;
         palmSuppressedFrame = TRUE;
     } else if (pCtx->PalmDetected) {
-        BOOLEAN anyContact = (candidates.Count > 0);
-        if (!anyContact) {
+        // How long the palm lock lasts is a user policy
+        // (AMT_PALM_CONFIG::PalmLockReleaseWhenGone):
+        //
+        //   0 (default): until every contact has left the pad - the pad
+        //     does not work at all while the palm is on it.
+        //   1: while a contact is still near where the palm was. The
+        //     anchor follows the nearest such contact, so a palm that
+        //     slides or breaks up into lobes is tracked; when nothing is
+        //     left within PALM_LATCH_RELEASE_RADIUS the palm is gone and
+        //     the latch drops - fingers elsewhere then resume (their
+        //     frozen pool entries re-match). An empty pad is the
+        //     degenerate case of the same rule.
+        BOOLEAN palmStillThere;
+
+        if (!pCtx->PalmConfig.PalmLockReleaseWhenGone) {
+            // Policy 0: locked while the pad has any contact at all.
+            palmStillThere = (candidates.Count > 0);
+        } else {
+            // Policy 1: locked while a contact remains near the palm.
+            ULONGLONG bestDistSq = ~0ULL;
+            USHORT    nearX = 0, nearY = 0;
+
+            palmStillThere = FALSE;
+            for (UCHAR pi = 0; pi < candidates.Count; pi++) {
+                const MATCH_CANDIDATE* pc = &candidates.Candidates[pi];
+                INT pdx = AmtAbsDelta((INT)pc->X, (INT)pCtx->PalmAnchorX);
+                INT pdy = AmtAbsDelta((INT)pc->Y, (INT)pCtx->PalmAnchorY);
+                if (pdx > PALM_LATCH_RELEASE_RADIUS || pdy > PALM_LATCH_RELEASE_RADIUS)
+                    continue;
+                ULONGLONG pd = AmtDistSq(pdx, pdy);
+                if (pd < bestDistSq) {
+                    bestDistSq = pd;
+                    nearX = pc->X;
+                    nearY = pc->Y;
+                    palmStillThere = TRUE;
+                }
+            }
+
+            if (palmStillThere) {
+                pCtx->PalmAnchorX = nearX;
+                pCtx->PalmAnchorY = nearY;
+            }
+        }
+
+        if (!palmStillThere) {
             pCtx->PalmDetected = FALSE;
         } else {
             candidates.Count = 0; // still palm-adjacent - suppress all

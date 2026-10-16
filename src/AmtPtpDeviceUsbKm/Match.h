@@ -72,7 +72,9 @@ AmtMatchBuildCandidates(
     _In_  BOOLEAN                                   SupportsForceTouch,
     _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT* Pool,
     _Out_ MATCH_CANDIDATE_SET*                     OutCandidates,
-    _Out_ BOOLEAN*                                 LargePalmDetected
+    _Out_ BOOLEAN*                                 LargePalmDetected,
+    _Out_ USHORT*                                  LargePalmX,   // where the large palm contact is (valid only if detected)
+    _Out_ USHORT*                                  LargePalmY
 );
 
 // Max per-frame finger movement for continuation/bridging, in normalized

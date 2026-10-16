@@ -91,8 +91,15 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
     USHORT EmitX;
     USHORT EmitY;
 
-    // TRUE if contact was in >=2-finger frame during ACTIVE lifetime.
-    // Causes EMA skip on first solo frame (aliveCountIsOne).
+    // TRUE if this contact took part in a >=2-finger frame. It is what
+    // routes the contact's lift through the gesture path (no RecentLifts
+    // entry, so no retap smoothing off a gesture lift) and what lets the
+    // tail-overlap logic in PTPCore tell a dying gesture's straggler from a
+    // genuine new gesture start. It is NOT permanent: it clears when the
+    // contact moves decisively on its own (a non-slow solo frame) or once it
+    // has been the only finger down for AMT_GESTURE_TAINT_EXPIRY_MS
+    // (SoloMs below) - without the expiry a straggler that stayed put
+    // would stay "in a gesture" until it lifted.
     BOOLEAN WasInGesture;
 
     // First-sample flag; skips the initial deadzone/EMA path when needed.
@@ -111,6 +118,17 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
 
     // ---- Matching-hint fields. NOT identity. ----
     USHORT   LastSlotHint;    // hw slot matched to last frame; speeds up matching
+
+    // Milliseconds this contact has been the ONLY finger down (saturating);
+    // reset whenever a gesture frame (>=2 fingers) is seen. Drives the
+    // WasInGesture expiry.
+    USHORT   SoloMs;
+
+    // Ticks since HystX/Y was last committed, capped at the velocity window
+    // (AMT_VELOCITY_WINDOW_MS). Velocity is distance-from-HystX/Y over the
+    // time that distance took to build up - see AmtContactUpdate.
+    ULONG    HystAgeTicks;
+
     LONGLONG LastSeenQpc;     // QPC of last successful match; grace/retap timing
 
     // Geometry/pressure, used ONLY as a matching tie-break (Match.c).
@@ -132,6 +150,22 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
 } ACTIVE_CONTACT, *PACTIVE_CONTACT;
 
 // Keep each pool element exactly one 64-byte cache line.
+// Velocity is measured as distance from the deadzone anchor (HystX/Y) over
+// the time since that anchor was committed - not over one frame. While the
+// deadzone holds the anchor still across several frames the distance
+// accumulates over all of them, so dividing it by a single frame's dt
+// inflated the speed by the number of held frames and made slow drift look
+// like MEDIUM/FAST (defeating the slow deadzone and slow smoothing). The
+// window bounds the averaging so a finger that starts moving after resting
+// is not judged against the whole rest: past this age the anchor is
+// "stale" and the speed is taken over the window instead.
+#define AMT_VELOCITY_WINDOW_MS 50
+
+// A contact that has been the only finger down this long is no longer part
+// of a gesture, whatever its speed (~12 frames at 120 Hz; comfortably longer
+// than the one-to-few-frame tail overlap the taint logic exists for).
+#define AMT_GESTURE_TAINT_EXPIRY_MS 100
+
 C_ASSERT(sizeof(ACTIVE_CONTACT) == 64);
 
 #define MAX_CONTACTS PTP_MAX_CONTACT_POINTS  // pool capacity, not slot count

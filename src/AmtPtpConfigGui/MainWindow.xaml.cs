@@ -2304,6 +2304,8 @@ namespace AmtPtpConfigGui
                 SlScoreThresh.Value = cfg.PalmScoreThresh;
                 SlMinMajor.Value = cfg.PalmMinMajor;
                 SlMinMinor.Value = cfg.PalmMinMinor;
+
+                ChkPalmLockRelease.IsChecked = cfg.PalmLockReleaseWhenGone != 0;
             }
             finally
             {
@@ -2324,6 +2326,7 @@ namespace AmtPtpConfigGui
             c.PalmScoreThresh = (uint)SlScoreThresh.Value;
             c.PalmMinMajor = (uint)SlMinMajor.Value;
             c.PalmMinMinor = (uint)SlMinMinor.Value;
+            c.PalmLockReleaseWhenGone = ChkPalmLockRelease.IsChecked == true ? 1u : 0u;
             return c.Clamped();
         }
 
