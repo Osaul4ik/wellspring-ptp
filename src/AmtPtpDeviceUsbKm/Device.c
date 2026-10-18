@@ -1477,12 +1477,15 @@ AmtPtpEvtDeviceD0Entry(
             (MATCH_MAX_TIME_DELTA_100NS * pDeviceContext->PerfFrequency.QuadPart) / 10000000LL;
         pDeviceContext->ClickArbitrationTimeoutTicks =
             (pDeviceContext->PerfFrequency.QuadPart * CLICK_ARBITRATION_TIMEOUT_MS) / 1000;
+        pDeviceContext->GestureSettleTicks =
+            (pDeviceContext->PerfFrequency.QuadPart * AMT_GESTURE_SETTLE_MS) / 1000;
         pDeviceContext->ScanTimeScaleQ16 =
             (10000LL << 16) / pDeviceContext->PerfFrequency.QuadPart;
     } else {
         pDeviceContext->RetapWindowTicks             = 0;
         pDeviceContext->MatchMaxTimeDeltaTicks        = 0;
         pDeviceContext->ClickArbitrationTimeoutTicks = 0;
+        pDeviceContext->GestureSettleTicks           = 0;
 
         // OPTIMIZATION: fold the "no usable clock" fallback into the same
         // Q16 scale used by the normal path, instead of branching on
@@ -1507,6 +1510,9 @@ AmtPtpEvtDeviceD0Entry(
     pDeviceContext->NextContactId        = 0;
     pDeviceContext->OverflowCount        = 0;
     pDeviceContext->PrevButtonClicked    = FALSE;
+    // A landing-settle hold from the previous power session must not
+    // outlive the contact pool it was deferring.
+    pDeviceContext->GestureSettleUntilQpc = 0;
     // A palm latch from the previous power session must not survive the
     // reset of the contact pool it was suppressing.
     pDeviceContext->PalmDetected         = FALSE;

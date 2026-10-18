@@ -166,6 +166,19 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
 // than the one-to-few-frame tail overlap the taint logic exists for).
 #define AMT_GESTURE_TAINT_EXPIRY_MS 100
 
+// Multi-finger landing settle window. Windows decides which gesture a touch
+// is (cursor / 2-finger scroll / 3- or 4-finger swipe) from the number of
+// contacts present when motion starts. Fingers rarely land in the same
+// frame: when the first finger is already moving and the others follow one
+// by one, motion emitted while the contact set is still growing makes the
+// recogniser lock onto the wrong gesture (scroll instead of a 4-finger
+// swipe, 3 fingers instead of 4). After a finger lands next to at least one
+// other contact, emitted motion is deferred for this long; the deferred
+// distance is released in one step by the normal deadzone path afterwards,
+// so nothing is lost and the contacts' geometry stays consistent. Each
+// further landing restarts the window. 0 disables the hold.
+#define AMT_GESTURE_SETTLE_MS 40
+
 C_ASSERT(sizeof(ACTIVE_CONTACT) == 64);
 
 #define MAX_CONTACTS PTP_MAX_CONTACT_POINTS  // pool capacity, not slot count
@@ -287,6 +300,9 @@ AmtContactUpdate(
     _In_    LONGLONG        PerfFrequencyHz,
     _In_    BOOLEAN         aliveCountIsOne,
     _In_    BOOLEAN         gestureActive,
+    _In_    BOOLEAN         gestureFast,   // frame-level FAST decision (AmtContactGestureIsFast); scroll scale is
+                                           // chosen once per frame so every finger of a gesture scales alike
+    _In_    BOOLEAN         holdMotion,    // landing-settle hold (AMT_GESTURE_SETTLE_MS): defer emitted motion
     _In_    const AMT_POINTER_CONFIG* PointerConfig,
     _In_    const AMT_SCROLL_CONFIG* ScrollConfig,
     _In_    const AMT_POINTER_RUNTIME* PointerRuntime,
@@ -295,6 +311,23 @@ AmtContactUpdate(
     _In_    USHORT          PadMaxY,
     _Out_   USHORT*         OutX,      // Windows-facing (EmitX/Y), clamped to the pad
     _Out_   USHORT*         OutY
+);
+
+// Would this (non-newborn) contact classify as FAST on a scroll/gesture
+// frame if updated with (rawX, rawY) now? Same velocity maths and thresholds
+// as AmtContactUpdate uses on the gesture path, evaluated read-only so the
+// caller can take ONE frame-level decision across all gesture contacts
+// before any of them is updated. FALSE when there is no timing basis yet.
+BOOLEAN
+AmtContactGestureIsFast(
+    _In_ const ACTIVE_CONTACT*      Contact,
+    _In_ USHORT                     rawX,
+    _In_ USHORT                     rawY,
+    _In_ LONGLONG                   nowQpc,
+    _In_ LONGLONG                   PerfFrequencyHz,
+    _In_ const AMT_POINTER_CONFIG*  PointerConfig,
+    _In_ const AMT_SCROLL_CONFIG*   ScrollConfig,
+    _In_ const AMT_POINTER_RUNTIME* PointerRuntime
 );
 
 #if DBG

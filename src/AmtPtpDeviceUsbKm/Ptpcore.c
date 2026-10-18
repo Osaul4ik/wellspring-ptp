@@ -520,12 +520,22 @@ PTPCore_ProcessFrame(
     }
 
     // NewIdentity (origin==0): lift old + birth new.
+    //
+    // candidateIsRebirth marks the candidates born by this path. The finger
+    // was already on the pad, so its re-birth is not a finger LANDING and
+    // must not (re)start the multi-finger landing-settle hold in Phase C -
+    // a firmware identity break in the middle of a swipe would otherwise
+    // stall the gesture for AMT_GESTURE_SETTLE_MS.
+    BOOLEAN candidateIsRebirth[PTP_MAX_CONTACT_POINTS] = { 0 };
+
     for (UCHAR ci = 0; ci < candidates.Count; ci++) {
         if (candidates.Candidates[ci].PalmLocal) continue;
 
         size_t p = matchResult.CorrespondingPoolIndex[ci];
         if (p == MATCH_NO_CORRESPONDENCE) continue;
         if (!matchResult.NewIdentity[ci]) continue;
+
+        candidateIsRebirth[ci] = TRUE;
 
         ULONG  oldId; USHORT oldX, oldY;
 
@@ -694,6 +704,21 @@ PTPCore_ProcessFrame(
     BOOLEAN candidateJustBorn[PTP_MAX_CONTACT_POINTS]    = { 0 };
     BOOLEAN candidateWasTainted[PTP_MAX_CONTACT_POINTS]  = { 0 };
     BOOLEAN candidateIsTrueBirth[PTP_MAX_CONTACT_POINTS] = { 0 };
+
+    // Frame-level gesture facts, gathered in the same pass (same stable,
+    // pre-mutation snapshot):
+    //   emitCount        contacts that will be reported this frame.
+    //   fingerLanded     a genuinely new finger (not a rebind, not an
+    //                    identity-break re-birth) joined this frame.
+    //   gestureFastFrame ONE scroll-scale decision for every gesture
+    //                    contact: FAST if the fastest of them is FAST.
+    //                    Deciding per contact scaled fingers of the same
+    //                    swipe by different factors (base 0.6x vs fast
+    //                    1.08x by default) and distorted their geometry.
+    UCHAR   emitCount        = 0;
+    BOOLEAN fingerLanded     = FALSE;
+    BOOLEAN gestureFastFrame = FALSE;
+
     for (UCHAR pc = 0; pc < candidates.Count; pc++) {
         if (candidates.Candidates[pc].PalmLocal) continue;
         size_t pp = matchResult.CorrespondingPoolIndex[pc];
@@ -702,7 +727,32 @@ PTPCore_ProcessFrame(
         candidateJustBorn[pc]    = (acPre->LastSeenQpc == 0);
         candidateWasTainted[pc]  = acPre->WasInGesture;
         candidateIsTrueBirth[pc] = candidateJustBorn[pc] && !rebindThisFrame[pp];
+
+        emitCount++;
+        if (candidateIsTrueBirth[pc] && !candidateIsRebirth[pc])
+            fingerLanded = TRUE;
+
+        if (gestureThisFrame && !gestureFastFrame && !candidateJustBorn[pc]) {
+            gestureFastFrame = AmtContactGestureIsFast(
+                acPre,
+                candidates.Candidates[pc].X, candidates.Candidates[pc].Y,
+                NowQpc, pCtx->PerfFrequency.QuadPart,
+                &pCtx->PointerConfig, &pCtx->ScrollConfig,
+                &pCtx->PointerRuntime);
+        }
     }
+
+    // Multi-finger landing settle (AMT_GESTURE_SETTLE_MS): a finger landing
+    // next to another contact (re)starts the window; while it runs, emitted
+    // motion of every contact is deferred through the deadzone path (see
+    // AmtContactUpdate), so Windows sees the finished N-finger touch before
+    // any motion and classifies the gesture from the full contact set.
+    // GestureSettleTicks == 0 (no clock / disabled) never holds.
+    if (fingerLanded && emitCount >= 2) {
+        pCtx->GestureSettleUntilQpc = NowQpc + pCtx->GestureSettleTicks;
+    }
+    const BOOLEAN holdMotion =
+        (emitCount >= 2) && (NowQpc < pCtx->GestureSettleUntilQpc);
 
     for (UCHAR ci = 0; ci < candidates.Count; ci++) {
         const MATCH_CANDIDATE* cand = &candidates.Candidates[ci];
@@ -762,6 +812,7 @@ PTPCore_ProcessFrame(
                          cand->Major, cand->Minor, cand->Pressure,
                          cand->SlotIndex, NowQpc, pCtx->PerfFrequency.QuadPart,
                          (BOOLEAN)(aliveCount == 1), gestureThisFrame,
+                         gestureFastFrame, holdMotion,
                          &pCtx->PointerConfig, &pCtx->ScrollConfig,
                          &pCtx->PointerRuntime, &pCtx->ScrollRuntime,
                          padMaxX, padMaxY,
@@ -849,9 +900,20 @@ PTPCore_ProcessFrame(
         // click flex can do that) - so drags could never be reclassified.
         // Arm on !ForceTouchAnchorValid instead: first frame with contacts
         // after button-down, once per press.
+        //
+        // The anchor goes on the contact with the highest pressure - the
+        // finger that is actually pressing. Contacts[] is in sensor scan
+        // order, so Contacts[0] could just as well be a resting thumb, and
+        // the lockout would then watch the wrong finger.
         if (!pCtx->ForceTouchAnchorValid && RawFrame->ContactCount > 0) {
-            pCtx->ForceTouchAnchorX     = RawFrame->Contacts[0].X;
-            pCtx->ForceTouchAnchorY     = RawFrame->Contacts[0].Y;
+            UCHAR pressIdx = 0;
+            for (UCHAR ai = 1; ai < RawFrame->ContactCount; ai++) {
+                if (RawFrame->Contacts[ai].Pressure >
+                    RawFrame->Contacts[pressIdx].Pressure)
+                    pressIdx = ai;
+            }
+            pCtx->ForceTouchAnchorX     = RawFrame->Contacts[pressIdx].X;
+            pCtx->ForceTouchAnchorY     = RawFrame->Contacts[pressIdx].Y;
             pCtx->ForceTouchAnchorValid = TRUE;
         }
 
@@ -861,6 +923,7 @@ PTPCore_ProcessFrame(
         BOOLEAN trackAnchor = pCtx->ForceTouchAnchorValid;
         ULONGLONG bestDistSq = ~0ULL;
         INT     bestDx = 0, bestDy = 0;
+        USHORT  bestX = 0, bestY = 0;
 
         for (UCHAR fi = 0; fi < RawFrame->ContactCount; fi++) {
             // Peak raw pressure this frame, shared by click arbitration
@@ -879,6 +942,8 @@ PTPCore_ProcessFrame(
                 bestDistSq = distSq;
                 bestDx     = dx;
                 bestDy     = dy;
+                bestX      = RawFrame->Contacts[fi].X;
+                bestY      = RawFrame->Contacts[fi].Y;
             }
         }
 
@@ -893,10 +958,48 @@ PTPCore_ProcessFrame(
                 ? pCtx->ForceTapDragLockoutDistanceCached
                 : pCtx->ForceTouchEmulationDragLockoutDistanceCached;
 
-            INT adx = (bestDx < 0) ? -bestDx : bestDx;
-            INT ady = (bestDy < 0) ? -bestDy : bestDy;
-            if (adx > dragLockoutDistance || ady > dragLockoutDistance) {
-                pCtx->ForceTouchDragLockout = TRUE;
+            // Hardware path only (framePeakPressure is meaningless on the
+            // emulation path). Two physical effects of a force press move
+            // the contact centroid WITHOUT the finger sliding on the glass,
+            // and the lockout used to read both as a drag - downgrading
+            // the press to an ordinary click, i.e. "force touch did not
+            // fire" (the default lockout distance is only ~1 mm):
+            //
+            //  - Press ramp: pressing harder flattens the fingertip and
+            //    shifts the centroid. While the peak pressure is still
+            //    climbing (PENDING, or already latched and still being
+            //    pressed deeper) the anchor FOLLOWS the tracked contact, so
+            //    only movement after the pressure stops rising counts.
+            //    Bounded in time: a PENDING press that stops climbing
+            //    resolves within CLICK_ARBITRATION_STALL_FRAMES_FAST_RESOLVE
+            //    frames, and a deliberate drag is still caught from there.
+            //
+            //  - Release: once FORCE_TOUCH is latched and the pressure has
+            //    fallen back under the threshold the finger is being
+            //    lifted, and it rolls off the pad. That drift is not intent,
+            //    and a press the user already completed must not be
+            //    cancelled by it. A drag while the pressure is still above
+            //    the threshold cancels as before.
+            const BOOLEAN pressRamping =
+                forceTouchHardwareActive &&
+                (pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING ||
+                 pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH) &&
+                framePeakPressure > pCtx->ClickArbitrationPeakPressure;
+
+            const BOOLEAN releasingForceTouch =
+                forceTouchHardwareActive &&
+                pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH &&
+                (ULONG)framePeakPressure < pCtx->PointerConfig.ForceTapThreshold;
+
+            if (pressRamping && !pCtx->ForceTouchDragLockout) {
+                pCtx->ForceTouchAnchorX = bestX;
+                pCtx->ForceTouchAnchorY = bestY;
+            } else if (!releasingForceTouch) {
+                INT adx = (bestDx < 0) ? -bestDx : bestDx;
+                INT ady = (bestDy < 0) ? -bestDy : bestDy;
+                if (adx > dragLockoutDistance || ady > dragLockoutDistance) {
+                    pCtx->ForceTouchDragLockout = TRUE;
+                }
             }
         }
     }
@@ -1061,6 +1164,17 @@ PTPCore_ProcessFrame(
         }
         // else: FORCE_TOUCH already latched and drag lockout hasn't tripped
         // (checked above) - hold it. HARD_TAP is likewise held.
+    }
+
+    // Keep the peak current after the latch too: ClickArbitrationPeakPressure
+    // is otherwise only advanced while PENDING, and the lockout's press-ramp
+    // test (above) needs it to tell "still being pressed deeper" from
+    // "pressure falling" once FORCE_TOUCH is latched. Nothing else reads it
+    // in that state.
+    if (ButtonDown &&
+        pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH &&
+        framePeakPressure > pCtx->ClickArbitrationPeakPressure) {
+        pCtx->ClickArbitrationPeakPressure = framePeakPressure;
     }
 
     // Ordinary click: report it only once we KNOW it's not going to be

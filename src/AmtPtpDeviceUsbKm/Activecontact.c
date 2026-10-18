@@ -168,6 +168,33 @@ AmtContactDeadzoneForVelocity(
     return (INT)PointerConfig->CursorDeadzone;
 }
 
+// Time basis for velocity: how long the distance-from-anchor (HystX/Y) has
+// been building up - see AmtContactUpdate. dtTicks is this frame's gap,
+// windowTicks the AMT_VELOCITY_WINDOW_MS cap (0 = no usable clock). Shared
+// by AmtContactUpdate and AmtContactGestureIsFast so both always judge the
+// same speed.
+static inline LONGLONG
+AmtContactVelocityDtTicks(
+    _In_ const ACTIVE_CONTACT* Contact,
+    _In_ LONGLONG              dtTicks,
+    _In_ LONGLONG              windowTicks
+)
+{
+    LONGLONG velocityDtTicks = dtTicks;
+    if (dtTicks > 0 && windowTicks > 0) {
+        LONGLONG span = dtTicks + (LONGLONG)Contact->HystAgeTicks;
+        if (span > windowTicks) {
+            // Only the stale part of the anchor's age is bounded. A single
+            // frame gap longer than the window (dropped frames, USB stall)
+            // is real elapsed time and is never shortened - capping below
+            // dtTicks would overstate the speed.
+            span = (dtTicks > windowTicks) ? dtTicks : windowTicks;
+        }
+        velocityDtTicks = span;
+    }
+    return velocityDtTicks;
+}
+
 // Assign a monotonic contact ID.
 static inline ULONG
 AmtContactAssignId(_Inout_ ULONG* NextContactId)
@@ -440,6 +467,7 @@ AmtContactCommitSample(
     _In_    BOOLEAN         passedDeadzone,
     _In_    BOOLEAN         aliveCountIsOne,
     _In_    BOOLEAN         gestureActive,
+    _In_    BOOLEAN         gestureFast,
     _In_    CONTACT_VELOCITY_BUCKET Velocity,
     _In_    INT             alphaNum,
     _In_    BOOLEAN         commitIsRetapSeededFirstSample,
@@ -487,7 +515,16 @@ AmtContactCommitSample(
         if (gestureActive) {
             // Scroll frame. FAST swipes get a boost over SLOW/MEDIUM
             // (see FastScaleQ32); both scales apply to the raw delta.
-            LONGLONG scaleQ32 = (Velocity == VELOCITY_FAST)
+            //
+            // The scale is chosen once per FRAME (gestureFast, from
+            // AmtContactGestureIsFast over all gesture contacts), not from
+            // this contact's own velocity bucket: fingers of one gesture
+            // move at slightly different speeds, and with the default
+            // base 0.6x vs fast 1.08x two fingers straddling the
+            // threshold were emitted with an ~1.8x scale difference. That
+            // distorts the finger geometry Windows classifies the gesture
+            // from (spread/direction), most visibly in 3/4-finger swipes.
+            LONGLONG scaleQ32 = gestureFast
                           ? ScrollRuntime->FastScaleQ32
                           : ScrollRuntime->BaseScaleQ32;
 
@@ -572,6 +609,39 @@ AmtContactCommitSample(
     *OutY = Contact->EmitY;
 }
 
+BOOLEAN
+AmtContactGestureIsFast(
+    _In_ const ACTIVE_CONTACT*      Contact,
+    _In_ USHORT                     rawX,
+    _In_ USHORT                     rawY,
+    _In_ LONGLONG                   nowQpc,
+    _In_ LONGLONG                   PerfFrequencyHz,
+    _In_ const AMT_POINTER_CONFIG*  PointerConfig,
+    _In_ const AMT_SCROLL_CONFIG*   ScrollConfig,
+    _In_ const AMT_POINTER_RUNTIME* PointerRuntime
+)
+{
+    // Mirrors the head of AmtContactUpdate on the gesture path
+    // (gestureActive == TRUE): same dt, same velocity window, same
+    // thresholds; ComputeAlpha is FALSE exactly as there.
+    const LONGLONG dtTicks = (Contact->LastSeenQpc == 0)
+        ? 0 : (nowQpc - Contact->LastSeenQpc);
+    const LONGLONG windowTicks = (PerfFrequencyHz > 0)
+        ? (PerfFrequencyHz * AMT_VELOCITY_WINDOW_MS) / 1000 : 0;
+    INT alphaUnused;
+
+    return AmtContactEvaluateVelocity(
+               rawX, rawY, Contact->HystX, Contact->HystY,
+               AmtContactVelocityDtTicks(Contact, dtTicks, windowTicks),
+               PerfFrequencyHz,
+               ScrollConfig->FastVelocity,
+               PointerConfig->CursorSlowVelocity,
+               PointerConfig->CursorFastVelocity,
+               PointerRuntime,
+               FALSE,
+               &alphaUnused) == VELOCITY_FAST;
+}
+
 VOID
 AmtContactUpdate(
     _Inout_ PACTIVE_CONTACT Contact,
@@ -585,6 +655,8 @@ AmtContactUpdate(
     _In_    LONGLONG        PerfFrequencyHz,
     _In_    BOOLEAN         aliveCountIsOne,
     _In_    BOOLEAN         gestureActive,
+    _In_    BOOLEAN         gestureFast,
+    _In_    BOOLEAN         holdMotion,
     _In_    const AMT_POINTER_CONFIG* PointerConfig,
     _In_    const AMT_SCROLL_CONFIG* ScrollConfig,
     _In_    const AMT_POINTER_RUNTIME* PointerRuntime,
@@ -614,18 +686,8 @@ AmtContactUpdate(
     // Identical to dtTicks whenever the anchor was committed last frame.
     const LONGLONG windowTicks = (PerfFrequencyHz > 0)
         ? (PerfFrequencyHz * AMT_VELOCITY_WINDOW_MS) / 1000 : 0;
-    LONGLONG velocityDtTicks = dtTicks;
-    if (dtTicks > 0 && windowTicks > 0) {
-        LONGLONG span = dtTicks + (LONGLONG)Contact->HystAgeTicks;
-        if (span > windowTicks) {
-            // Only the stale part of the anchor's age is bounded. A single
-            // frame gap longer than the window (dropped frames, USB stall)
-            // is real elapsed time and is never shortened - capping below
-            // dtTicks would overstate the speed.
-            span = (dtTicks > windowTicks) ? dtTicks : windowTicks;
-        }
-        velocityDtTicks = span;
-    }
+    LONGLONG velocityDtTicks =
+        AmtContactVelocityDtTicks(Contact, dtTicks, windowTicks);
 
     // Scroll gestures classify FAST against their own threshold, decoupled
     // from single-finger cursor movement below. Alpha is only meaningful
@@ -655,6 +717,14 @@ AmtContactUpdate(
         Contact->HystX = rawX;
         Contact->HystY = rawY;
         passed = TRUE;
+    } else if (holdMotion && !Contact->PendingFirstSample) {
+        // Landing-settle hold (AMT_GESTURE_SETTLE_MS): defer this sample
+        // exactly like a sample inside the deadzone. The anchor (HystX/Y)
+        // and the emitted position stay put, the distance keeps building
+        // up against the anchor, and the first sample after the hold
+        // releases all of it through the normal commit path. A contact's
+        // own first sample is never held (its baseline is being seeded).
+        passed = FALSE;
     } else {
         // Keep HystX/Y as-is on the retap-seeded path - they hold the
         // seeded baseline.
@@ -662,7 +732,7 @@ AmtContactUpdate(
     }
 
     AmtContactCommitSample(Contact, rawX, rawY, passed, aliveCountIsOne,
-                           gestureActive, velocity,
+                           gestureActive, gestureFast, velocity,
                            alphaNum, retapSeededFirstSample,
                            PointerRuntime, ScrollRuntime,
                            PadMaxX, PadMaxY,

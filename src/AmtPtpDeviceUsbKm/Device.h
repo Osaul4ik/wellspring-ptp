@@ -471,6 +471,12 @@ typedef struct _DEVICE_CONTEXT
     LONGLONG      RetapWindowTicks;             // AmtRecentLiftFindNearby window
     LONGLONG      MatchMaxTimeDeltaTicks;       // AmtMatchCorrespond time-reject
     LONGLONG      ClickArbitrationTimeoutTicks; // click arbitration safety-net
+    LONGLONG      GestureSettleTicks;           // AMT_GESTURE_SETTLE_MS landing-settle window
+
+    // QPC deadline until which emitted multi-finger motion is deferred after
+    // a finger landed next to another contact (see AMT_GESTURE_SETTLE_MS in
+    // Activecontact.h). A deadline in the past (or 0) means no hold.
+    LONGLONG      GestureSettleUntilQpc;
 
     // MICRO-OPT: Q16 fixed-point form of (10000 / PerfFrequency), computed
     // once at D0Entry instead of a 64-bit divide (and a PerfFrequency>0
