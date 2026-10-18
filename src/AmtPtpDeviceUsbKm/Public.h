@@ -227,16 +227,16 @@ typedef struct _AMT_POINTER_CONFIG
     3,                                                                      \
     /* SmallContactRejectionEnabled            */ 1,                       \
     /* SmallContactBirthMajorThreshold         */ 80,                      \
-    /* SmallContactRejectionStrict             */ 0,                       \
-    /* SmallContactMajorThreshold              */ 50,                      \
-    /* ForceTouchSmallContactRejectionEnabled  */ 0,                       \
-    /* ForceTouchSmallContactBirthMajorThreshold */ 80,                    \
+    /* SmallContactRejectionStrict             */ 1,                       \
+    /* SmallContactMajorThreshold              */ 10,                      \
+    /* ForceTouchSmallContactRejectionEnabled  */ 1,                       \
+    /* ForceTouchSmallContactBirthMajorThreshold */ 45,                    \
     /* ForceTouchSmallContactRejectionStrict   */ 0,                       \
-    /* ForceTouchSmallContactMajorThreshold    */ 50,                      \
+    /* ForceTouchSmallContactMajorThreshold    */ 31,                      \
     1,                                                                      \
     AMT_POINTER_ACTION_CONTEXT_MENU,                                        \
     300,                                                                    \
-    110,                                                                    \
+    130,                                                                    \
     110,                                                                    \
     /* ForceTouchActionEnabled                 */ 1                        \
 }
