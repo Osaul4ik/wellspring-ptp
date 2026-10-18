@@ -22,6 +22,13 @@ namespace AmtPtpConfigGui
         // need "second launch sees this as taken" to hold from OnStartup
         // all the way to process exit.
         private Mutex? _singleInstanceMutex;
+
+        // Only the instance that actually created the mutex owns it. A second
+        // launch gets a handle to the existing mutex (createdNew == false) and
+        // does NOT own it: calling ReleaseMutex() there throws
+        // ApplicationException from OnExit, i.e. every "second launch just
+        // activates the running window" would end in an unhandled exception.
+        private bool _ownsSingleInstanceMutex;
         private CancellationTokenSource? _pipeServerCts;
 
         protected override void OnStartup(StartupEventArgs e)
@@ -29,6 +36,7 @@ namespace AmtPtpConfigGui
             base.OnStartup(e);
 
             _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
+            _ownsSingleInstanceMutex = createdNew;
 
             if (!createdNew)
             {
@@ -101,8 +109,20 @@ namespace AmtPtpConfigGui
         protected override void OnExit(ExitEventArgs e)
         {
             _pipeServerCts?.Cancel();
-            _singleInstanceMutex?.ReleaseMutex();
+
+            try
+            {
+                if (_ownsSingleInstanceMutex)
+                    _singleInstanceMutex?.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+                // Not owned by this thread (should not happen: OnStartup and
+                // OnExit both run on the UI thread). Exiting must not throw.
+            }
+
             _singleInstanceMutex?.Dispose();
+            _singleInstanceMutex = null;
             base.OnExit(e);
         }
 

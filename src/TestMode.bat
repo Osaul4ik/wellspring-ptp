@@ -1,4 +1,3 @@
-```bat
 @echo off
 setlocal
 
@@ -85,18 +84,26 @@ cls
 echo Disabling Test Mode...
 echo.
 
-bcdedit /set testsigning off
+rem "bcdedit /set testsigning off" keeps a "testsigning No" element in the
+rem BCD store, and the existence-based status check above would then keep
+rem reporting ENABLED. Deleting the value removes the element entirely.
+bcdedit /deletevalue testsigning
 
 if errorlevel 1 (
-    echo.
-    echo Failed to disable Test Mode.
-    echo.
-    echo Possible reasons:
-    echo  - Secure Boot is enabled.
-    echo  - This script is not running as Administrator.
-    echo.
-    pause
-    exit /b 1
+    rem Element not found means Test Mode is already off - not a failure.
+    rem If it is still present, the delete really failed.
+    bcdedit /enum | findstr /i "testsigning" >nul
+    if not errorlevel 1 (
+        echo.
+        echo Failed to disable Test Mode.
+        echo.
+        echo Possible reasons:
+        echo  - Secure Boot is enabled.
+        echo  - This script is not running as Administrator.
+        echo.
+        pause
+        exit /b 1
+    )
 )
 
 echo.
@@ -107,4 +114,3 @@ echo.
 
 pause
 exit /b 0
-```

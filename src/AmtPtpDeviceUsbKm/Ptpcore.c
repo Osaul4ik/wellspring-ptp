@@ -455,6 +455,12 @@ PTPCore_ProcessFrame(
     // Per-frame taint gate: >=2 fingers down this frame.
     BOOLEAN gestureThisFrame = (aliveCount >= 2);
 
+    // Normalized pad extent (same 0..(max-min) space Input.c produces):
+    // bounds the Windows-facing position, which scaling can push past the
+    // edge. Loop-invariant, so computed once per frame, not per contact.
+    const USHORT padMaxX = (USHORT)(pCtx->DeviceInfo->x.max - pCtx->DeviceInfo->x.min);
+    const USHORT padMaxY = (USHORT)(pCtx->DeviceInfo->y.max - pCtx->DeviceInfo->y.min);
+
     // Drain deferred lift-offs
     AmtCoreDrainOverflow(pCtx, OutResult);
 
@@ -751,12 +757,6 @@ PTPCore_ProcessFrame(
         }
 
         USHORT repX, repY;
-
-        // Normalized pad extent (same 0..(max-min) space Input.c produces):
-        // bounds the Windows-facing position, which scaling can push past
-        // the edge.
-        const USHORT padMaxX = (USHORT)(pCtx->DeviceInfo->x.max - pCtx->DeviceInfo->x.min);
-        const USHORT padMaxY = (USHORT)(pCtx->DeviceInfo->y.max - pCtx->DeviceInfo->y.min);
 
         AmtContactUpdate(c, cand->X, cand->Y,
                          cand->Major, cand->Minor, cand->Pressure,

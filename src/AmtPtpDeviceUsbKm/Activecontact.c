@@ -103,7 +103,11 @@ AmtContactEvaluateVelocity(
     INT dy = AmtAbsDelta((INT)rawY, (INT)prevY);
     INT distance = (dx > dy) ? dx : dy;
 
-    LONGLONG unitsPerSec = ((LONGLONG)distance * PerfFrequencyHz) / DtQpcTicks;
+    // HOT PATH: a stationary finger (distance 0, very common) needs no
+    // 64-bit division; the result is 0 either way.
+    LONGLONG unitsPerSec = (distance == 0)
+        ? 0
+        : ((LONGLONG)distance * PerfFrequencyHz) / DtQpcTicks;
 
     if (!ComputeAlpha) {
         *OutAlphaNum = PointerRuntime->CursorSmoothingAlphaDen;
@@ -678,13 +682,19 @@ AmtContactUpdate(
     // Gesture-taint expiry: a contact that has been the only finger down
     // for AMT_GESTURE_TAINT_EXPIRY_MS is no longer part of a gesture, even
     // if it never moved decisively. Any >=2-finger frame restarts the clock.
-    if (aliveCountIsOne) {
+    //
+    // HOT PATH: SoloMs is only ever read while the contact is tainted, and a
+    // contact only becomes tainted in a >=2-finger frame (PTPCore), which
+    // zeroes it here first. So the clock needs to run only for tainted solo
+    // frames; for every ordinary solo frame (the common case) it stays 0 and
+    // the 64-bit division below is skipped.
+    if (aliveCountIsOne && Contact->WasInGesture) {
         if (dtTicks > 0 && PerfFrequencyHz > 0) {
             LONGLONG addMs = (dtTicks * 1000 + PerfFrequencyHz / 2) / PerfFrequencyHz;
             LONGLONG ms = (LONGLONG)Contact->SoloMs + addMs;
             Contact->SoloMs = (USHORT)(ms > 0xFFFF ? 0xFFFF : ms);
         }
-        if (Contact->WasInGesture && Contact->SoloMs >= AMT_GESTURE_TAINT_EXPIRY_MS)
+        if (Contact->SoloMs >= AMT_GESTURE_TAINT_EXPIRY_MS)
             Contact->WasInGesture = FALSE;
     } else {
         Contact->SoloMs = 0;
