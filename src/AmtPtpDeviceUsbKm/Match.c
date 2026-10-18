@@ -70,6 +70,117 @@ AmtMatchHasNearbyActiveContact(
     return FALSE;
 }
 
+// Is raw contact `Self` the best claimant of some tracked contact?
+//
+// AmtMatchHasNearbyActiveContact above only recognises a continuation that
+// is within MATCH_BIRTH_PROXIMITY_DELTA of the pool's SMOOTHED position. A
+// finger dragged quickly toward the pad edge runs ahead of that smoothed
+// position (EMA lag) by more than the small radius, so it used to look like
+// a brand-new touch exactly when it crossed into the edge zone - and the
+// edge hard reject then froze a finger that never left the pad (and the
+// frozen entry stopped updating, so the finger could not recover when
+// dragged back to the centre).
+//
+// A raw contact is a continuation if some ACTIVE pool entry lies within the
+// matcher's own continuation delta (same bound AmtMatchCorrespond uses) AND
+// this raw contact is the nearest raw contact to that entry. "Nearest"
+// keeps a genuinely new finger from being mistaken for a continuation of
+// another finger that is still present: that finger is nearer to its own
+// entry. Ties go to the lower raw index so the result is deterministic.
+// Only called for edge-zone births, so the O(pool x raw) cost is irrelevant.
+static BOOLEAN
+AmtMatchIsContinuation(
+    _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT* Pool,
+    _In_ const RAW_FRAME*                          RawFrame,
+    _In_ UCHAR                                     Self
+)
+{
+    const RAW_CONTACT* me = &RawFrame->Contacts[Self];
+
+    for (size_t p = 0; p < MAX_CONTACTS; p++) {
+        const ACTIVE_CONTACT* poolEntry = &Pool[p];
+        if (poolEntry->State != CONTACT_ACTIVE)
+            continue;
+
+        INT dxMe = AmtAbsDelta((INT)me->X, (INT)poolEntry->ReportX);
+        INT dyMe = AmtAbsDelta((INT)me->Y, (INT)poolEntry->ReportY);
+        if (dxMe > MATCH_MAX_CONTINUATION_DELTA ||
+            dyMe > MATCH_MAX_CONTINUATION_DELTA)
+            continue;
+
+        ULONGLONG meSq = AmtDistSq(dxMe, dyMe);
+        BOOLEAN   nearest = TRUE;
+
+        for (UCHAR j = 0; j < RawFrame->ContactCount; j++) {
+            if (j == Self)
+                continue;
+            const RAW_CONTACT* other = &RawFrame->Contacts[j];
+            INT dxO = AmtAbsDelta((INT)other->X, (INT)poolEntry->ReportX);
+            INT dyO = AmtAbsDelta((INT)other->Y, (INT)poolEntry->ReportY);
+            ULONGLONG oSq = AmtDistSq(dxO, dyO);
+            if (oSq < meSq || (oSq == meSq && j < Self)) {
+                nearest = FALSE;
+                break;
+            }
+        }
+
+        if (nearest)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+// Are other fingers down, i.e. is this contact part of a gesture (in
+// progress or forming)? Used so that the edge zone never blocks gestures:
+// a finger-sized birth in the zone is allowed to join them.
+//
+// TRUE if either
+//  (a) a tracked (ACTIVE) contact is still present in this frame - some
+//      OTHER raw contact lies within the continuation delta of it (a
+//      tracked finger that lifted this very frame does not count); or
+//  (b) another raw contact in this frame is finger-shaped and outside the
+//      edge zone (fingers landing together, e.g. a 3-finger swipe with one
+//      finger near the edge) - that contact is the "anchor" showing this is
+//      not an isolated edge touch.
+// A lone isolated touch in the zone has neither, and is still rejected.
+static BOOLEAN
+AmtMatchHasGestureContext(
+    _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT* Pool,
+    _In_ const RAW_FRAME*                          RawFrame,
+    _In_ UCHAR                                     Self,
+    _In_ const struct BCM5974_CONFIG*              DevInfo,
+    _In_ const AMT_PALM_CONFIG*                    PalmConfig,
+    _In_ const AMT_PALM_RUNTIME*                   PalmRuntime
+)
+{
+    // (a)
+    for (size_t p = 0; p < MAX_CONTACTS; p++) {
+        const ACTIVE_CONTACT* poolEntry = &Pool[p];
+        if (poolEntry->State != CONTACT_ACTIVE)
+            continue;
+
+        for (UCHAR j = 0; j < RawFrame->ContactCount; j++) {
+            if (j == Self)
+                continue;
+            const RAW_CONTACT* other = &RawFrame->Contacts[j];
+            if (AmtAbsDelta((INT)other->X, (INT)poolEntry->ReportX) <= MATCH_MAX_CONTINUATION_DELTA &&
+                AmtAbsDelta((INT)other->Y, (INT)poolEntry->ReportY) <= MATCH_MAX_CONTINUATION_DELTA)
+                return TRUE;
+        }
+    }
+
+    // (b)
+    for (UCHAR j = 0; j < RawFrame->ContactCount; j++) {
+        if (j == Self)
+            continue;
+        const RAW_CONTACT* other = &RawFrame->Contacts[j];
+        if (AmtPalmLooksLikeFinger(other->Major, other->Minor, DevInfo, PalmConfig) &&
+            !AmtPalmInEdgeZone(DevInfo, PalmRuntime, (INT)other->X, (INT)other->Y))
+            return TRUE;
+    }
+    return FALSE;
+}
+
 VOID
 AmtMatchBuildCandidates(
     _In_  const RAW_FRAME*                        RawFrame,
@@ -162,8 +273,29 @@ AmtMatchBuildCandidates(
         BOOLEAN isBirth = !AmtMatchHasNearbyActiveContact(
             Pool, (INT)rc->X, (INT)rc->Y);
 
+        // The edge zone only ever matters for births (Palm.c), so the
+        // finer checks below run only for a birth that is in the zone:
+        //  1. A fast-moving tracked finger outruns the small proximity
+        //     radius above and would look like a new touch the moment it
+        //     enters the zone. If it is the nearest raw contact to a
+        //     tracked entry it is a continuation, not a birth.
+        //  2. A genuine birth in the zone is not hard-rejected when other
+        //     fingers are down (gesture context): the edge must not block
+        //     gestures. Isolated edge touches are still rejected.
+        BOOLEAN gestureContext = FALSE;
+        if (isBirth &&
+            AmtPalmInEdgeZone(DevInfo, PalmRuntime, (INT)rc->X, (INT)rc->Y)) {
+            if (AmtMatchIsContinuation(Pool, RawFrame, i)) {
+                isBirth = FALSE;
+            } else {
+                gestureContext = AmtMatchHasGestureContext(
+                    Pool, RawFrame, i, DevInfo, PalmConfig, PalmRuntime);
+            }
+        }
+
         PALM_CLASS palm = AmtPalmClassify(rc->Major, rc->Minor, DevInfo, PalmConfig, PalmRuntime,
-                                          (INT)rc->X, (INT)rc->Y, isBirth);
+                                          (INT)rc->X, (INT)rc->Y, isBirth,
+                                          gestureContext);
 
         if (palm == PALM_LARGE) {
             *LargePalmDetected = TRUE;

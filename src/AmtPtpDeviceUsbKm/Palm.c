@@ -24,7 +24,7 @@ AmtPalmEdgeWidth(_In_ INT Range, _In_ LONGLONG FactorQ32)
     return (INT)(((LONGLONG)Range * FactorQ32) >> AMT_RUNTIME_FIXED_SHIFT);
 }
 
-static BOOLEAN
+BOOLEAN
 AmtPalmInEdgeZone(
     _In_ const struct BCM5974_CONFIG* DevInfo,
     _In_ const AMT_PALM_RUNTIME*      Runtime,
@@ -44,43 +44,30 @@ AmtPalmInEdgeZone(
                       NormY < edgeTop  || NormY > (yRange - edgeBottom));
 }
 
-PALM_CLASS
-AmtPalmClassify(
-    _In_ USHORT                       Major,
-    _In_ USHORT                       Minor,
-    _In_ const struct BCM5974_CONFIG* DevInfo,
-    _In_ const AMT_PALM_CONFIG*       Config,
-    _In_ const AMT_PALM_RUNTIME*      Runtime,
-    _In_ INT                          NormX,
-    _In_ INT                          NormY,
-    _In_ BOOLEAN                      IsBirth
+// Edge-zone knowledge passed into the shape heuristic: the soft edge bonus
+// needs to know whether the contact is in the edge zone, and AmtPalmClassify
+// has often computed that already (births) - so it is passed in instead of
+// being recomputed.
+#define AMT_EDGE_UNKNOWN 0   // compute lazily (only when major > 130)
+#define AMT_EDGE_OUTSIDE 1
+#define AMT_EDGE_INSIDE  2
+#define AMT_EDGE_IGNORE  3   // no edge bonus at all (pure shape query)
+
+// Shape/size heuristic only (no birth/edge hard reject).
+static PALM_CLASS
+AmtPalmShapeClassify(
+    _In_     INT                       Major,
+    _In_     INT                       Minor,
+    _In_     const struct BCM5974_CONFIG* DevInfo,
+    _In_     const AMT_PALM_CONFIG*    Config,
+    _In_opt_ const AMT_PALM_RUNTIME*   Runtime,
+    _In_     INT                       NormX,
+    _In_     INT                       NormY,
+    _In_     INT                       EdgeState
 )
 {
-    // Hard reject: a contact that FIRST APPEARS inside the edge zone is
-    // treated as palm outright, regardless of shape/size. This runs before
-    // the small-contact early-out below on purpose - a birth in the zone
-    // is rejected even if it's finger-sized, since the whole point is to
-    // suppress accidental edge touches, not just wide palm-shaped ones.
-    // Contacts already being tracked that merely move through the zone are
-    // NOT affected - only IsBirth is checked here.
-    //
-    // MICRO-OPT: cache the result instead of letting the soft edge bonus
-    // below recompute the identical AmtPalmInEdgeZone(DevInfo, Runtime,
-    // NormX, NormY) call. When IsBirth is TRUE and we get past this block,
-    // inEdgeZone is already known FALSE (a TRUE would have returned
-    // above), so the soft-bonus check below reuses it as-is. When IsBirth
-    // is FALSE this block never computes it - unchanged from before,
-    // still only evaluated below if major > 130.
-    BOOLEAN inEdgeZone = FALSE;
-    if (IsBirth) {
-        inEdgeZone = AmtPalmInEdgeZone(DevInfo, Runtime, NormX, NormY);
-        if (inEdgeZone) {
-            return PALM_LOCAL;
-        }
-    }
-
-    INT major = AmtRawToSignedInt(Major);
-    INT minor = AmtRawToSignedInt(Minor);
+    INT major = Major;
+    INT minor = Minor;
 
     INT palmMinMajor  = (INT)Config->PalmMinMajor;
     INT palmMinMinor  = (INT)Config->PalmMinMinor;
@@ -124,17 +111,84 @@ AmtPalmClassify(
         else if (major100 >=  601LL * minor) score += 10;
     }
 
-    // Soft edge bonus for continuations (or births that weren't caught by
-    // the hard-reject above, e.g. a birth reported with major==0 for one
-    // frame). Kept as a secondary signal on top of the hard reject.
-    if (major > 130) {
-        if (!IsBirth) {
+    // Soft edge bonus (continuations, and births that were let through the
+    // hard reject by gesture context). Kept as a secondary signal.
+    if (major > 130 && EdgeState != AMT_EDGE_IGNORE && Runtime != NULL) {
+        BOOLEAN inEdgeZone;
+        if (EdgeState == AMT_EDGE_UNKNOWN)
             inEdgeZone = AmtPalmInEdgeZone(DevInfo, Runtime, NormX, NormY);
-        }
-        // else: IsBirth==TRUE - inEdgeZone already known FALSE (see above).
+        else
+            inEdgeZone = (EdgeState == AMT_EDGE_INSIDE);
         if (inEdgeZone)
             score += 10;
     }
 
     return (score >= palmScoreThresh) ? PALM_LOCAL : PALM_NONE;
+}
+
+BOOLEAN
+AmtPalmLooksLikeFinger(
+    _In_ USHORT                       Major,
+    _In_ USHORT                       Minor,
+    _In_ const struct BCM5974_CONFIG* DevInfo,
+    _In_ const AMT_PALM_CONFIG*       Config
+)
+{
+    // Pure shape query: no edge bonus, so "would this be a finger if it
+    // were NOT near the edge". PALM_NONE is the only finger-like outcome.
+    return (BOOLEAN)(AmtPalmShapeClassify(AmtRawToSignedInt(Major),
+                                          AmtRawToSignedInt(Minor),
+                                          DevInfo, Config, NULL, 0, 0,
+                                          AMT_EDGE_IGNORE) == PALM_NONE);
+}
+
+PALM_CLASS
+AmtPalmClassify(
+    _In_ USHORT                       Major,
+    _In_ USHORT                       Minor,
+    _In_ const struct BCM5974_CONFIG* DevInfo,
+    _In_ const AMT_PALM_CONFIG*       Config,
+    _In_ const AMT_PALM_RUNTIME*      Runtime,
+    _In_ INT                          NormX,
+    _In_ INT                          NormY,
+    _In_ BOOLEAN                      IsBirth,
+    _In_ BOOLEAN                      GestureContext
+)
+{
+    // Hard reject: a contact that FIRST APPEARS inside the edge zone is
+    // treated as palm outright, regardless of shape/size - the point is to
+    // suppress accidental edge touches, not just wide palm-shaped ones.
+    // Contacts already being tracked that merely move through the zone are
+    // NOT affected - only IsBirth is checked here.
+    //
+    // EXCEPTION (GestureContext): the edge zone must not block gestures.
+    // When the caller has established that other fingers are down (a
+    // gesture is in progress or forming - see AmtMatchHasGestureContext in
+    // Match.c), a birth in the zone is NOT hard-rejected; it falls through
+    // to the shape/score heuristic below, so a palm-shaped blob in the zone
+    // is still rejected (PALM_LOCAL/PALM_LARGE) and only finger-sized
+    // contacts are let through to join the gesture.
+    INT     edgeState        = AMT_EDGE_UNKNOWN;
+    BOOLEAN edgeBirthAllowed = FALSE;   // in-zone birth let through by GestureContext
+    if (IsBirth) {
+        BOOLEAN inEdgeZone = AmtPalmInEdgeZone(DevInfo, Runtime, NormX, NormY);
+        if (inEdgeZone && !GestureContext) {
+            return PALM_LOCAL;
+        }
+        edgeBirthAllowed = inEdgeZone;
+        edgeState = inEdgeZone ? AMT_EDGE_INSIDE : AMT_EDGE_OUTSIDE;
+    }
+
+    PALM_CLASS cls = AmtPalmShapeClassify(AmtRawToSignedInt(Major),
+                                          AmtRawToSignedInt(Minor),
+                                          DevInfo, Config, Runtime,
+                                          NormX, NormY, edgeState);
+
+    // A large palm that lands in the edge zone must stay a LOCAL reject
+    // (as it always was): PALM_LARGE blanks and latches the whole pad,
+    // which would kill the very gesture this bypass exists to protect.
+    if (edgeBirthAllowed && cls == PALM_LARGE)
+        return PALM_LOCAL;
+
+    return cls;
 }

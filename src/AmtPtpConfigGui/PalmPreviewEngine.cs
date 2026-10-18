@@ -37,11 +37,22 @@ namespace AmtPtpConfigGui
 
         public static PalmClass Classify(
             PadGeometry geo, PalmConfig cfg,
-            int major, int minor, double x, double y, bool isBirth)
+            int major, int minor, double x, double y, bool isBirth,
+            bool gestureContext = false)
         {
-            if (isBirth && InEdgeZone(geo, cfg, x, y))
+            // gestureContext: other fingers are down (gesture in progress or
+            // forming). The edge zone then does not hard-reject a birth; the
+            // contact is judged by shape/score only (see Palm.c).
+            bool inEdge = false;
+            bool edgeKnown = false;
+            if (isBirth)
             {
-                return PalmClass.Local;
+                inEdge = InEdgeZone(geo, cfg, x, y);
+                edgeKnown = true;
+                if (inEdge && !gestureContext)
+                {
+                    return PalmClass.Local;
+                }
             }
 
             if (major < cfg.PalmMinMajor && minor < cfg.PalmMinMinor)
@@ -75,8 +86,13 @@ namespace AmtPtpConfigGui
                 else if (major100 >= 601L * minor) score += 10;
             }
 
-            if (major > 130 && InEdgeZone(geo, cfg, x, y))
-                score += 10;
+            if (major > 130)
+            {
+                if (!edgeKnown)
+                    inEdge = InEdgeZone(geo, cfg, x, y);
+                if (inEdge)
+                    score += 10;
+            }
 
             return score >= cfg.PalmScoreThresh ? PalmClass.Local : PalmClass.None;
         }

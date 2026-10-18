@@ -46,7 +46,27 @@ AmtPalmClassify(
     _In_ const AMT_PALM_RUNTIME*      Runtime,
     _In_ INT                          NormX,
     _In_ INT                          NormY,
-    _In_ BOOLEAN                      IsBirth
+    _In_ BOOLEAN                      IsBirth,
+    _In_ BOOLEAN                      GestureContext
+);
+
+// TRUE if (Major, Minor) is finger-shaped (shape heuristic only, ignoring
+// the edge zone): i.e. would classify as PALM_NONE away from the edge.
+BOOLEAN
+AmtPalmLooksLikeFinger(
+    _In_ USHORT                       Major,
+    _In_ USHORT                       Minor,
+    _In_ const struct BCM5974_CONFIG* DevInfo,
+    _In_ const AMT_PALM_CONFIG*       Config
+);
+
+// TRUE if the normalized position lies inside the configured edge zone.
+BOOLEAN
+AmtPalmInEdgeZone(
+    _In_ const struct BCM5974_CONFIG* DevInfo,
+    _In_ const AMT_PALM_RUNTIME*      Runtime,
+    _In_ INT                          NormX,
+    _In_ INT                          NormY
 );
 
 EXTERN_C_END
