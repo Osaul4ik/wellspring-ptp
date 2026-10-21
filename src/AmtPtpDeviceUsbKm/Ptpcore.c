@@ -719,6 +719,48 @@ PTPCore_ProcessFrame(
     BOOLEAN fingerLanded     = FALSE;
     BOOLEAN gestureFastFrame = FALSE;
 
+    // Motion mode for this frame (scroll scale/deadzone/smoothing vs cursor
+    // feel). gestureThisFrame (>=2 fingers) still drives taint and lift
+    // routing; it must NOT by itself switch motion to scroll, otherwise
+    // putting a second, resting finger down re-scales the moving finger as
+    // a scroll the instant it lands. With 2 contacts we go scroll only when
+    // both have actually moved; 3+ contacts are always gesture motion.
+    // Latched until fewer than 2 contacts remain, so it doesn't flicker.
+    BOOLEAN scrollMode = FALSE;
+    if (!gestureThisFrame) {
+        pCtx->ScrollModeLatched = FALSE;
+    } else if (aliveCount >= AMT_SCROLL_MODE_ALWAYS_CONTACTS ||
+               pCtx->ScrollModeLatched) {
+        scrollMode = TRUE;
+        pCtx->ScrollModeLatched = TRUE;
+    } else {
+        ULONG moveUnits = AMT_SCROLL_MODE_MOVE_MIN_UNITS;
+        if (pCtx->PointerConfig.CursorDeadzone > moveUnits)
+            moveUnits = pCtx->PointerConfig.CursorDeadzone;
+        if (pCtx->ScrollConfig.Deadzone > moveUnits)
+            moveUnits = pCtx->ScrollConfig.Deadzone;
+
+        UCHAR movingCount = 0;
+        for (UCHAR mc = 0; mc < candidates.Count; mc++) {
+            if (candidates.Candidates[mc].PalmLocal) continue;
+            size_t mp = matchResult.CorrespondingPoolIndex[mc];
+            if (mp == MATCH_NO_CORRESPONDENCE) continue;
+            const ACTIVE_CONTACT* acM = &pCtx->ActiveContacts[mp];
+            if (acM->LastSeenQpc == 0 || acM->PendingFirstSample) continue;
+
+            INT mdx = (INT)candidates.Candidates[mc].X - (INT)acM->HystX;
+            INT mdy = (INT)candidates.Candidates[mc].Y - (INT)acM->HystY;
+            if (mdx < 0) mdx = -mdx;
+            if (mdy < 0) mdy = -mdy;
+            if ((ULONG)mdx >= moveUnits || (ULONG)mdy >= moveUnits)
+                movingCount++;
+        }
+        if (movingCount >= 2) {
+            scrollMode = TRUE;
+            pCtx->ScrollModeLatched = TRUE;
+        }
+    }
+
     for (UCHAR pc = 0; pc < candidates.Count; pc++) {
         if (candidates.Candidates[pc].PalmLocal) continue;
         size_t pp = matchResult.CorrespondingPoolIndex[pc];
@@ -732,7 +774,7 @@ PTPCore_ProcessFrame(
         if (candidateIsTrueBirth[pc] && !candidateIsRebirth[pc])
             fingerLanded = TRUE;
 
-        if (gestureThisFrame && !gestureFastFrame && !candidateJustBorn[pc]) {
+        if (scrollMode && !gestureFastFrame && !candidateJustBorn[pc]) {
             gestureFastFrame = AmtContactGestureIsFast(
                 acPre,
                 candidates.Candidates[pc].X, candidates.Candidates[pc].Y,
@@ -748,11 +790,12 @@ PTPCore_ProcessFrame(
     // AmtContactUpdate), so Windows sees the finished N-finger touch before
     // any motion and classifies the gesture from the full contact set.
     // GestureSettleTicks == 0 (no clock / disabled) never holds.
-    if (fingerLanded && emitCount >= 2) {
+    if (fingerLanded && emitCount >= AMT_GESTURE_SETTLE_MIN_CONTACTS) {
         pCtx->GestureSettleUntilQpc = NowQpc + pCtx->GestureSettleTicks;
     }
     const BOOLEAN holdMotion =
-        (emitCount >= 2) && (NowQpc < pCtx->GestureSettleUntilQpc);
+        (emitCount >= AMT_GESTURE_SETTLE_MIN_CONTACTS) &&
+        (NowQpc < pCtx->GestureSettleUntilQpc);
 
     for (UCHAR ci = 0; ci < candidates.Count; ci++) {
         const MATCH_CANDIDATE* cand = &candidates.Candidates[ci];
@@ -811,7 +854,7 @@ PTPCore_ProcessFrame(
         AmtContactUpdate(c, cand->X, cand->Y,
                          cand->Major, cand->Minor, cand->Pressure,
                          cand->SlotIndex, NowQpc, pCtx->PerfFrequency.QuadPart,
-                         (BOOLEAN)(aliveCount == 1), gestureThisFrame,
+                         (BOOLEAN)(aliveCount == 1), scrollMode,
                          gestureFastFrame, holdMotion,
                          &pCtx->PointerConfig, &pCtx->ScrollConfig,
                          &pCtx->PointerRuntime, &pCtx->ScrollRuntime,

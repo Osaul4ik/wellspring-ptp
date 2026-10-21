@@ -179,6 +179,28 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
 // further landing restarts the window. 0 disables the hold.
 #define AMT_GESTURE_SETTLE_MS 40
 
+// The landing-settle hold only applies once at least this many contacts are
+// down. With 2 contacts there is no gesture-count ambiguity worth freezing
+// the pointer for: a finger that is already moving and a second one that
+// just rests on the pad must NOT stall the cursor (that showed up as a
+// micro-freeze followed by a jump when the held distance was released).
+// The hold exists to stop a 3-finger touch being read as 2 and a 4-finger
+// one as 3, so it starts at 3 contacts. Set to 2 to restore the old behaviour.
+#define AMT_GESTURE_SETTLE_MIN_CONTACTS 3
+
+// Scroll/gesture MOTION mode (scroll deadzone, scroll scale, scroll smoothing)
+// is separate from the gesture TAINT (>=2 fingers down), which keeps routing
+// lifts/taps exactly as before. With exactly 2 contacts the motion stays in
+// cursor mode until BOTH fingers actually move, so a moving finger plus a
+// second one that is merely resting on the pad keeps cursor feel (cursor
+// speed, cursor deadzone/smoothing) instead of being re-scaled as a scroll.
+// A contact counts as moving once it is this many sensor units (at least)
+// away from its deadzone anchor; the larger of the cursor/scroll deadzone
+// config wins if it is bigger.
+#define AMT_SCROLL_MODE_MOVE_MIN_UNITS 2
+// From this many contacts the motion is always scroll/gesture mode.
+#define AMT_SCROLL_MODE_ALWAYS_CONTACTS 3
+
 C_ASSERT(sizeof(ACTIVE_CONTACT) == 64);
 
 #define MAX_CONTACTS PTP_MAX_CONTACT_POINTS  // pool capacity, not slot count

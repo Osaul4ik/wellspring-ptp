@@ -478,6 +478,12 @@ typedef struct _DEVICE_CONTEXT
     // Activecontact.h). A deadline in the past (or 0) means no hold.
     LONGLONG      GestureSettleUntilQpc;
 
+    // TRUE while a 2-contact touch is in scroll motion mode (both fingers
+    // moved). Latched so the mode doesn't flicker frame to frame; cleared
+    // as soon as fewer than 2 contacts are down. See
+    // AMT_SCROLL_MODE_MOVE_MIN_UNITS in Activecontact.h.
+    BOOLEAN       ScrollModeLatched;
+
     // MICRO-OPT: Q16 fixed-point form of (10000 / PerfFrequency), computed
     // once at D0Entry instead of a 64-bit divide (and a PerfFrequency>0
     // branch) on every single USB interrupt completion (the hottest

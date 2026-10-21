@@ -1513,6 +1513,7 @@ AmtPtpEvtDeviceD0Entry(
     // A landing-settle hold from the previous power session must not
     // outlive the contact pool it was deferring.
     pDeviceContext->GestureSettleUntilQpc = 0;
+    pDeviceContext->ScrollModeLatched     = FALSE;
     // A palm latch from the previous power session must not survive the
     // reset of the contact pool it was suppressing.
     pDeviceContext->PalmDetected         = FALSE;
