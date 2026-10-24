@@ -155,6 +155,12 @@ typedef struct _DEVICE_CONTEXT
     // caller-provided output-buffer size before forwarding them.
     WDFQUEUE        InputQueue;
 
+    // Latest digitizer report when no HID READ is queued. Coalesced to
+    // prevent USB processing from depending on HIDClass read timing.
+    // Protected by StateLock; reset at every D0Entry.
+    PTP_REPORT      PendingTouchReport;
+    BOOLEAN         PendingTouchReportValid;
+
     // NOTE: the GUI's config control device is intentionally NOT a field
     // here. It is driver-lifetime state (DRIVER_CONTEXT::ConfigControlDevice
     // in Driver.h), created once and reattached to whichever FDO is

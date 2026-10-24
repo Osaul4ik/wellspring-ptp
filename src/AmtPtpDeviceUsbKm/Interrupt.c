@@ -9,6 +9,9 @@
 static VOID
 AmtPtpTryDeliverForceTouchClick(_In_ PDEVICE_CONTEXT pCtx);
 
+static VOID
+AmtPtpTryDeliverPendingTouchReport(_In_ PDEVICE_CONTEXT pCtx);
+
 BOOLEAN
 AmtPtpIsT2Device(_In_ const PDEVICE_CONTEXT DeviceContext)
 {
@@ -216,10 +219,7 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
 
     LONGLONG      PerfDelta;
     LARGE_INTEGER Now;
-    NTSTATUS      Status;
     PTP_REPORT    Report;
-    WDFREQUEST    Request;
-    WDFMEMORY     RequestMemory;
 
     // USB read completion.
 
@@ -283,21 +283,9 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         return;
     }
 
-    Status = WdfIoQueueRetrieveNextRequest(
-        pCtx->InputQueue,
-        &Request);
-
-    if (!NT_SUCCESS(Status))
-        return;
-
-    Status = WdfRequestRetrieveOutputMemory(
-        Request,
-        &RequestMemory);
-
-    if (!NT_SUCCESS(Status)) {
-        WdfRequestComplete(Request, Status);
-        return;
-    }
+    // Processing the sensor frame must not depend on whether HIDClass has
+    // a read pending at this exact instant. A momentarily empty manual
+    // queue is normal and must not stall tracking/velocity/contact lifetime.
 
     // The continuous reader can re-enter on another CPU. Hold StateLock
     // across the complete state-mutating section.
@@ -433,27 +421,17 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         forceTouchClick ||
         (pCtx->ForceTouchDeliveryState != FORCE_TOUCH_DELIVERY_IDLE);
 
-    // Main state lock is no longer needed.
+    // Keep the newest touch report until HIDClass supplies a read. This
+    // deliberately coalesces positions rather than blocking the USB reader.
+    // StateLock also serializes this slot with QueueReady callbacks.
+    pCtx->PendingTouchReport = Report;
+    pCtx->PendingTouchReportValid = TRUE;
+
     WdfSpinLockRelease(pCtx->StateLock);
 
-    Status = WdfMemoryCopyFromBuffer(
-        RequestMemory,
-        0,
-        (PVOID)&Report,
-        sizeof(PTP_REPORT));
-
-    if (!NT_SUCCESS(Status)) {
-        WdfRequestComplete(Request, Status);
-        return;
-    }
-
-    WdfRequestSetInformation(
-        Request,
-        sizeof(PTP_REPORT));
-
-    WdfRequestComplete(
-        Request,
-        STATUS_SUCCESS);
+    // Submit an available read right away; otherwise QueueReady will flush
+    // the saved report as soon as HIDClass queues another request.
+    AmtPtpTryDeliverPendingTouchReport(pCtx);
 
     // Optional live monitor snapshot.
     // MICRO-OPT: unlocked peek before taking LiveLock. LiveEnabled is
@@ -627,6 +605,41 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     }
 }
 
+// Coalesce sensor positions while no read is available, then deliver the
+// newest report. A request is never held hostage waiting for another USB
+// frame. All slot operations and dequeues are serialized by StateLock.
+static VOID
+AmtPtpTryDeliverPendingTouchReport(_In_ PDEVICE_CONTEXT pCtx)
+{
+    WDFREQUEST request = NULL;
+    WDFMEMORY memory;
+    NTSTATUS status;
+
+    WdfSpinLockAcquire(pCtx->StateLock);
+    if (!pCtx->PendingTouchReportValid) {
+        WdfSpinLockRelease(pCtx->StateLock);
+        return;
+    }
+
+    status = WdfIoQueueRetrieveNextRequest(pCtx->InputQueue, &request);
+    if (!NT_SUCCESS(status)) {
+        WdfSpinLockRelease(pCtx->StateLock);
+        return;
+    }
+
+    status = WdfRequestRetrieveOutputMemory(request, &memory);
+    if (NT_SUCCESS(status)) {
+        status = WdfMemoryCopyFromBuffer(
+            memory, 0, &pCtx->PendingTouchReport, sizeof(PTP_REPORT));
+        if (NT_SUCCESS(status)) {
+            WdfRequestSetInformation(request, sizeof(PTP_REPORT));
+            pCtx->PendingTouchReportValid = FALSE;
+        }
+    }
+    WdfSpinLockRelease(pCtx->StateLock);
+    WdfRequestComplete(request, status);
+}
+
 // AmtPtpTryDeliverForceTouchClick
 //
 // One attempt at advancing the force-touch mouse-click delivery state
@@ -767,6 +780,7 @@ AmtPtpEvtInputQueueReady(
 
     UNREFERENCED_PARAMETER(Queue);
 
+    AmtPtpTryDeliverPendingTouchReport(pCtx);
     AmtPtpTryDeliverForceTouchClick(pCtx);
 }
 
