@@ -327,6 +327,29 @@ PTPCore_ProcessFrame(
             palmStillThere = FALSE;
             for (UCHAR pi = 0; pi < candidates.Count; pi++) {
                 const MATCH_CANDIDATE* pc = &candidates.Candidates[pi];
+
+                // A finger that was already down BEFORE the palm landed is
+                // still in the pool (frozen at its last position while the
+                // palm blanks the pad). It is not part of the palm: if it
+                // were allowed to count, the anchor would hop onto it once
+                // the palm lifts and the latch would never release while
+                // that finger stays down. Palm remnants never have a pool
+                // entry (candidates are suppressed while the latch is set,
+                // so nothing is born during it).
+                BOOLEAN isPreExistingFinger = FALSE;
+                for (size_t pp = 0; pp < MAX_CONTACTS; pp++) {
+                    const ACTIVE_CONTACT* pe = &pCtx->ActiveContacts[pp];
+                    if (pe->State != CONTACT_ACTIVE)
+                        continue;
+                    if (AmtAbsDelta((INT)pc->X, (INT)pe->ReportX) <= MATCH_BIRTH_PROXIMITY_DELTA &&
+                        AmtAbsDelta((INT)pc->Y, (INT)pe->ReportY) <= MATCH_BIRTH_PROXIMITY_DELTA) {
+                        isPreExistingFinger = TRUE;
+                        break;
+                    }
+                }
+                if (isPreExistingFinger)
+                    continue;
+
                 INT pdx = AmtAbsDelta((INT)pc->X, (INT)pCtx->PalmAnchorX);
                 INT pdy = AmtAbsDelta((INT)pc->Y, (INT)pCtx->PalmAnchorY);
                 if (pdx > PALM_LATCH_RELEASE_RADIUS || pdy > PALM_LATCH_RELEASE_RADIUS)
