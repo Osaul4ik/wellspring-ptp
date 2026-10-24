@@ -14,19 +14,7 @@ typedef enum _CONTACT_VELOCITY_BUCKET
     VELOCITY_FAST,
 } CONTACT_VELOCITY_BUCKET;
 
-static inline INT
-AmtMulQ32Round(_In_ INT Value, _In_ LONGLONG CoeffQ32)
-{
-    LONGLONG product = (LONGLONG)Value * CoeffQ32;
-    const LONGLONG half = 1LL << (AMT_RUNTIME_FIXED_SHIFT - 1);
-
-    if (product >= 0)
-        return (INT)((product + half) >> AMT_RUNTIME_FIXED_SHIFT);
-
-    product = -product;
-    return -(INT)((product + half) >> AMT_RUNTIME_FIXED_SHIFT);
-}
-
+// Round-half-away-from-zero of a Q32 product back to an integer.
 static inline INT
 AmtQ32ProductToIntRound(_In_ LONGLONG Product)
 {
@@ -37,6 +25,12 @@ AmtQ32ProductToIntRound(_In_ LONGLONG Product)
 
     Product = -Product;
     return -(INT)((Product + half) >> AMT_RUNTIME_FIXED_SHIFT);
+}
+
+static inline INT
+AmtMulQ32Round(_In_ INT Value, _In_ LONGLONG CoeffQ32)
+{
+    return AmtQ32ProductToIntRound((LONGLONG)Value * CoeffQ32);
 }
 
 // Lower smoothing reduces slow-speed jitter.
@@ -109,22 +103,14 @@ AmtContactEvaluateVelocity(
         ? 0
         : ((LONGLONG)distance * PerfFrequencyHz) / DtQpcTicks;
 
+    const CONTACT_VELOCITY_BUCKET bucket =
+        (unitsPerSec <= SlowThresholdUnitsPerSec) ? VELOCITY_SLOW :
+        (unitsPerSec >= FastThresholdUnitsPerSec) ? VELOCITY_FAST :
+                                                    VELOCITY_MEDIUM;
+
     if (!ComputeAlpha) {
         *OutAlphaNum = PointerRuntime->CursorSmoothingAlphaDen;
-        if (unitsPerSec <= SlowThresholdUnitsPerSec)
-            return VELOCITY_SLOW;
-        if (unitsPerSec >= FastThresholdUnitsPerSec)
-            return VELOCITY_FAST;
-        return VELOCITY_MEDIUM;
-    }
-
-    CONTACT_VELOCITY_BUCKET bucket;
-    if (unitsPerSec <= SlowThresholdUnitsPerSec) {
-        bucket = VELOCITY_SLOW;
-    } else if (unitsPerSec >= FastThresholdUnitsPerSec) {
-        bucket = VELOCITY_FAST;
-    } else {
-        bucket = VELOCITY_MEDIUM;
+        return bucket;
     }
 
     // Continuous ramp between the configured slow alpha numerator (at/below
@@ -693,8 +679,8 @@ AmtContactUpdate(
 
     // Scroll gestures classify FAST against their own threshold, decoupled
     // from single-finger cursor movement below. Alpha is only meaningful
-    // on the non-gesture path (see AmtContactCommitSample) - it's still
-    // The gesture path skips the alpha-ramp work inside AmtContactEvaluateVelocity.
+    // on the non-gesture path (see AmtContactCommitSample), so the gesture
+    // path skips the alpha-ramp work inside AmtContactEvaluateVelocity.
     LONGLONG fastThreshold = gestureActive ? ScrollConfig->FastVelocity
                                             : PointerConfig->CursorFastVelocity;
     LONGLONG slowThreshold = PointerConfig->CursorSlowVelocity;
