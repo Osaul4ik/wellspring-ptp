@@ -1519,6 +1519,7 @@ AmtPtpEvtDeviceD0Entry(
     pDeviceContext->PalmDetected         = FALSE;
     pDeviceContext->PalmAnchorX          = 0;
     pDeviceContext->PalmAnchorY          = 0;
+    pDeviceContext->PalmAnchorFresh      = FALSE;
     pDeviceContext->ForceTouchAnchorValid = FALSE;
     pDeviceContext->ForceTouchDragLockout = FALSE;
     // Drop pending/in-flight force-touch clicks from the previous power

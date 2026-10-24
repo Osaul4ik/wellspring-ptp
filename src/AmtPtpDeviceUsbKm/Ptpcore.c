@@ -299,6 +299,7 @@ PTPCore_ProcessFrame(
         pCtx->PalmDetected = TRUE;
         pCtx->PalmAnchorX  = largePalmX;
         pCtx->PalmAnchorY  = largePalmY;
+        pCtx->PalmAnchorFresh = TRUE;
         OutResult->LargePalmBlanked = TRUE;
         palmSuppressedFrame = TRUE;
     } else if (pCtx->PalmDetected) {
@@ -336,23 +337,42 @@ PTPCore_ProcessFrame(
                 // that finger stays down. Palm remnants never have a pool
                 // entry (candidates are suppressed while the latch is set,
                 // so nothing is born during it).
+                // It counts as that finger only if it is the candidate
+                // nearest to the frozen entry; a palm remnant that happens
+                // to sit beside the finger is farther from the entry than
+                // the finger's own candidate and stays a remnant.
                 BOOLEAN isPreExistingFinger = FALSE;
-                for (size_t pp = 0; pp < MAX_CONTACTS; pp++) {
+                for (size_t pp = 0; pp < MAX_CONTACTS && !isPreExistingFinger; pp++) {
                     const ACTIVE_CONTACT* pe = &pCtx->ActiveContacts[pp];
                     if (pe->State != CONTACT_ACTIVE)
                         continue;
-                    if (AmtAbsDelta((INT)pc->X, (INT)pe->ReportX) <= MATCH_BIRTH_PROXIMITY_DELTA &&
-                        AmtAbsDelta((INT)pc->Y, (INT)pe->ReportY) <= MATCH_BIRTH_PROXIMITY_DELTA) {
-                        isPreExistingFinger = TRUE;
-                        break;
+                    INT edx = AmtAbsDelta((INT)pc->X, (INT)pe->ReportX);
+                    INT edy = AmtAbsDelta((INT)pc->Y, (INT)pe->ReportY);
+                    if (edx > MATCH_BIRTH_PROXIMITY_DELTA || edy > MATCH_BIRTH_PROXIMITY_DELTA)
+                        continue;
+                    ULONGLONG myDsq = AmtDistSq(edx, edy);
+                    BOOLEAN   closerExists = FALSE;
+                    for (UCHAR oi = 0; oi < candidates.Count; oi++) {
+                        if (oi == pi) continue;
+                        const MATCH_CANDIDATE* oc = &candidates.Candidates[oi];
+                        if (AmtDistSq(AmtAbsDelta((INT)oc->X, (INT)pe->ReportX),
+                                      AmtAbsDelta((INT)oc->Y, (INT)pe->ReportY)) < myDsq) {
+                            closerExists = TRUE;
+                            break;
+                        }
                     }
+                    if (!closerExists)
+                        isPreExistingFinger = TRUE;
                 }
                 if (isPreExistingFinger)
                     continue;
 
                 INT pdx = AmtAbsDelta((INT)pc->X, (INT)pCtx->PalmAnchorX);
                 INT pdy = AmtAbsDelta((INT)pc->Y, (INT)pCtx->PalmAnchorY);
-                if (pdx > PALM_LATCH_RELEASE_RADIUS || pdy > PALM_LATCH_RELEASE_RADIUS)
+                const INT radius = pCtx->PalmAnchorFresh
+                                       ? PALM_LATCH_CAPTURE_RADIUS
+                                       : PALM_LATCH_RELEASE_RADIUS;
+                if (pdx > radius || pdy > radius)
                     continue;
                 ULONGLONG pd = AmtDistSq(pdx, pdy);
                 if (pd < bestDistSq) {
@@ -366,6 +386,7 @@ PTPCore_ProcessFrame(
             if (palmStillThere) {
                 pCtx->PalmAnchorX = nearX;
                 pCtx->PalmAnchorY = nearY;
+                pCtx->PalmAnchorFresh = FALSE;
             }
         }
 

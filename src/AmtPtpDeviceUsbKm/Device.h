@@ -283,6 +283,10 @@ typedef struct _DEVICE_CONTEXT
     BOOLEAN PalmDetected;
     USHORT  PalmAnchorX;
     USHORT  PalmAnchorY;
+    // TRUE until a remnant of the palm has been acquired after the last
+    // large-palm frame: the anchor is then the palm's centroid, and a
+    // peeling-off remnant can sit well away from it (wide capture radius).
+    BOOLEAN PalmAnchorFresh;
 
     // Contact pool for PTPCore and ActiveContact. Allocated separately
     // (not embedded) and manually aligned to 64 bytes in

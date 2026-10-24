@@ -18,6 +18,11 @@ typedef enum { PALM_NONE = 0, PALM_LOCAL = 1, PALM_LARGE = 2 } PALM_CLASS;
 // with real palm captures.
 #define PALM_LATCH_RELEASE_RADIUS 3000
 
+// Capture radius used for the first re-acquisition after a large-palm frame
+// (anchor = palm centroid, remnants can be a palm-half away from it). After
+// a remnant is acquired the anchor follows it with the tight radius above.
+#define PALM_LATCH_CAPTURE_RADIUS 6000
+
 typedef struct _AMT_PALM_RUNTIME
 {
     LONGLONG EdgeFactorTopQ32;
