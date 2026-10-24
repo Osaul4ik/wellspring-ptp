@@ -313,6 +313,136 @@ AmtRegistryWriteDword(
     (VOID)WdfRegistryAssignULong(Key, &valueName, Value);
 }
 
+// ----------------------------------------------------------------------------
+// Registry persistence. Each config struct is a flat run of ULONGs, so load
+// and save are driven by one table per struct ({value name, member offset}).
+// Adding a field to a config means adding ONE row here - a field can no
+// longer be wired into Load but forgotten in Save (or vice versa), which is
+// exactly how the drag-lockout distances once silently failed to persist.
+// ----------------------------------------------------------------------------
+
+typedef struct _AMT_REG_FIELD
+{
+    PCWSTR Name;
+    ULONG  Offset;
+} AMT_REG_FIELD;
+
+#define AMT_REG_FIELD_ENTRY(Type, Member, Name) \
+    { (Name), (ULONG)FIELD_OFFSET(Type, Member) }
+
+static const AMT_REG_FIELD g_PalmRegFields[] = {
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, EdgePermilleTop, AMT_REG_VALUE_EDGE_TOP),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, EdgePermilleLeft, AMT_REG_VALUE_EDGE_LEFT),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, EdgePermilleRight, AMT_REG_VALUE_EDGE_RIGHT),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, EdgePermilleBottom, AMT_REG_VALUE_EDGE_BOTTOM),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, PalmLargeMajor, AMT_REG_VALUE_LARGE_MAJOR),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, PalmLargeRatio, AMT_REG_VALUE_LARGE_RATIO),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, PalmScoreThresh, AMT_REG_VALUE_SCORE_THRESH),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, PalmMinMajor, AMT_REG_VALUE_MIN_MAJOR),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, PalmMinMinor, AMT_REG_VALUE_MIN_MINOR),
+    AMT_REG_FIELD_ENTRY(AMT_PALM_CONFIG, PalmLockReleaseWhenGone, AMT_REG_VALUE_PALM_LOCK_RELEASE),
+};
+
+static const AMT_REG_FIELD g_PointerRegFields[] = {
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTapThreshold, AMT_REG_VALUE_FORCETAP_THRESHOLD),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTapAction, AMT_REG_VALUE_FORCETAP_ACTION),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEnabled, AMT_REG_VALUE_FORCETOUCH_ENABLED),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, RequirePressureToActivate, AMT_REG_VALUE_REQUIRE_PRESSURE),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, RequirePressureContinuously, AMT_REG_VALUE_REQUIRE_PRESSURE_CONTINUOUS),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchActionEnabled, AMT_REG_VALUE_FORCETOUCH_ACTION_ENABLED),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, CursorSmoothingPercent, AMT_REG_VALUE_CURSOR_SMOOTH),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, CursorSpeedPercent, AMT_REG_VALUE_CURSOR_SPEED),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, CursorDeadzone, AMT_REG_VALUE_CURSOR_DEADZONE),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, CursorDeadzoneSlow, AMT_REG_VALUE_CURSOR_DEADZONE_SLOW),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, CursorDeadzoneFast, AMT_REG_VALUE_CURSOR_DEADZONE_FAST),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, CursorSlowVelocity, AMT_REG_VALUE_CURSOR_SLOW_VEL),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, CursorFastVelocity, AMT_REG_VALUE_CURSOR_FAST_VEL),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, SmoothingAlphaDen, AMT_REG_VALUE_CURSOR_ALPHA_DEN),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, SmoothingAlphaNumSlow, AMT_REG_VALUE_CURSOR_ALPHA_SLOW),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, SmallContactRejectionEnabled, AMT_REG_VALUE_SMALL_CONTACT_REJECTION),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, SmallContactRejectionStrict, AMT_REG_VALUE_SMALL_CONTACT_REJECTION_STRICT),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, SmallContactBirthMajorThreshold, AMT_REG_VALUE_SMALL_CONTACT_BIRTH_MAJOR_THRESHOLD),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, SmallContactMajorThreshold, AMT_REG_VALUE_SMALL_CONTACT_MAJOR_THRESHOLD),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchSmallContactRejectionEnabled, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_REJECTION),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchSmallContactRejectionStrict, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_REJECTION_STRICT),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchSmallContactBirthMajorThreshold, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_BIRTH_MAJOR_THRESHOLD),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchSmallContactMajorThreshold, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_MAJOR_THRESHOLD),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationEnabled, AMT_REG_VALUE_FORCETOUCH_EMULATION_ENABLED),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationAction, AMT_REG_VALUE_FORCETOUCH_EMULATION_ACTION),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationHoldMs, AMT_REG_VALUE_FORCETOUCH_EMULATION_HOLD_MS),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTapDragLockoutDistance, AMT_REG_VALUE_FORCE_TAP_DRAG_LOCKOUT_DISTANCE),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationDragLockoutDistance, AMT_REG_VALUE_FORCETOUCH_EMULATION_DRAG_LOCKOUT_DISTANCE),
+};
+
+static const AMT_REG_FIELD g_ScrollRegFields[] = {
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, SpeedPercent, AMT_REG_VALUE_SCROLL_SPEED),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, FastSpeedPercent, AMT_REG_VALUE_SCROLL_FAST_SPEED),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, SmoothingPercent, AMT_REG_VALUE_SCROLL_SMOOTH),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, Deadzone, AMT_REG_VALUE_SCROLL_DEADZONE),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, FastVelocity, AMT_REG_VALUE_SCROLL_FAST_VEL),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, ScaleNum, AMT_REG_VALUE_SCROLL_SCALE_NUM),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, ScaleDen, AMT_REG_VALUE_SCROLL_SCALE_DEN),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, ScaleNumFast, AMT_REG_VALUE_SCROLL_SCALE_NUM_FAST),
+    AMT_REG_FIELD_ENTRY(AMT_SCROLL_CONFIG, ScaleDenFast, AMT_REG_VALUE_SCROLL_SCALE_DEN_FAST),
+};
+
+// Open the device registry key and read every listed field into Config. A
+// value missing from the registry leaves the pre-seeded default untouched.
+// Returns FALSE (Config untouched) when the key cannot be opened - no saved
+// values yet, or no access.
+static BOOLEAN
+AmtRegLoadFields(
+    _In_ WDFDEVICE            Device,
+    _Inout_ PVOID             Config,
+    _In_reads_(Count) const AMT_REG_FIELD* Fields,
+    _In_ size_t               Count
+)
+{
+    WDFKEY key;
+
+    if (!NT_SUCCESS(WdfDeviceOpenRegistryKey(
+            Device, PLUGPLAY_REGKEY_DEVICE, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key))) {
+        return FALSE;
+    }
+
+    for (size_t i = 0; i < Count; i++) {
+        AmtRegistryReadDword(key, Fields[i].Name,
+                             (PULONG)((PUCHAR)Config + Fields[i].Offset));
+    }
+
+    WdfRegistryClose(key);
+    return TRUE;
+}
+
+// Best-effort write of every listed field - the in-memory config is already
+// applied by the caller regardless, so a failed open or write only means the
+// choice does not survive a reboot. WdfDeviceOpenRegistryKey is
+// PASSIVE_LEVEL-only; the SET/RESET IOCTL handlers always run there (default
+// parallel WDFQUEUE, no DISPATCH_LEVEL constraint), which is why the public
+// Save prototypes can stay annotated loosely for future callers.
+static VOID
+AmtRegSaveFields(
+    _In_ WDFDEVICE            Device,
+    _In_ const VOID*          Config,
+    _In_reads_(Count) const AMT_REG_FIELD* Fields,
+    _In_ size_t               Count
+)
+{
+    WDFKEY key;
+
+    if (!NT_SUCCESS(WdfDeviceOpenRegistryKey(
+            Device, PLUGPLAY_REGKEY_DEVICE, KEY_WRITE, WDF_NO_OBJECT_ATTRIBUTES, &key))) {
+        return;
+    }
+
+    for (size_t i = 0; i < Count; i++) {
+        AmtRegistryWriteDword(key, Fields[i].Name,
+                              *(const ULONG*)((const UCHAR*)Config + Fields[i].Offset));
+    }
+
+    WdfRegistryClose(key);
+}
+
 _IRQL_requires_(PASSIVE_LEVEL)
 VOID
 AmtPalmConfigLoadFromRegistry(
@@ -320,33 +450,12 @@ AmtPalmConfigLoadFromRegistry(
     _Inout_ PAMT_PALM_CONFIG Config
 )
 {
-    WDFKEY   key;
-    NTSTATUS status;
-
     PAGED_CODE();
 
-    status = WdfDeviceOpenRegistryKey(
-        Device, PLUGPLAY_REGKEY_DEVICE, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key);
-    if (!NT_SUCCESS(status)) {
-        return; // No saved values yet (or no access) - keep compiled-in defaults.
-    }
-
-    AmtRegistryReadDword(key, AMT_REG_VALUE_EDGE_TOP,     &Config->EdgePermilleTop);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_EDGE_LEFT,    &Config->EdgePermilleLeft);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_EDGE_RIGHT,   &Config->EdgePermilleRight);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_EDGE_BOTTOM,  &Config->EdgePermilleBottom);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_LARGE_MAJOR,  &Config->PalmLargeMajor);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_LARGE_RATIO,  &Config->PalmLargeRatio);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCORE_THRESH, &Config->PalmScoreThresh);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_MIN_MAJOR,    &Config->PalmMinMajor);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_MIN_MINOR,    &Config->PalmMinMinor);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_PALM_LOCK_RELEASE, &Config->PalmLockReleaseWhenGone);
-
-    WdfRegistryClose(key);
-
-    // A value loaded straight from the registry is untrusted input the
-    // same as anything arriving over the SET IOCTL - clamp it too.
-    AmtPalmConfigClamp(Config);
+    // A value loaded straight from the registry is untrusted input the same
+    // as anything arriving over the SET IOCTL - clamp it too.
+    if (AmtRegLoadFields(Device, Config, g_PalmRegFields, ARRAYSIZE(g_PalmRegFields)))
+        AmtPalmConfigClamp(Config);
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -356,32 +465,7 @@ AmtPalmConfigSaveToRegistry(
     _In_ const AMT_PALM_CONFIG* Config
 )
 {
-    WDFKEY   key;
-    NTSTATUS status;
-
-    // WdfDeviceOpenRegistryKey is PASSIVE_LEVEL-only; the SET IOCTL handler
-    // below always runs at PASSIVE_LEVEL (default parallel WDFQUEUE, no
-    // DISPATCH_LEVEL constraint set on it), so this is safe despite the
-    // DISPATCH_LEVEL-max annotation on the prototype (kept loose so future
-    // callers don't need to special-case IRQL).
-    status = WdfDeviceOpenRegistryKey(
-        Device, PLUGPLAY_REGKEY_DEVICE, KEY_WRITE, WDF_NO_OBJECT_ATTRIBUTES, &key);
-    if (!NT_SUCCESS(status)) {
-        return; // Best-effort - in-memory config is already applied regardless.
-    }
-
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_EDGE_TOP,     Config->EdgePermilleTop);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_EDGE_LEFT,    Config->EdgePermilleLeft);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_EDGE_RIGHT,   Config->EdgePermilleRight);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_EDGE_BOTTOM,  Config->EdgePermilleBottom);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_LARGE_MAJOR,  Config->PalmLargeMajor);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_LARGE_RATIO,  Config->PalmLargeRatio);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCORE_THRESH, Config->PalmScoreThresh);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_MIN_MAJOR,    Config->PalmMinMajor);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_MIN_MINOR,    Config->PalmMinMinor);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_PALM_LOCK_RELEASE, Config->PalmLockReleaseWhenGone);
-
-    WdfRegistryClose(key);
+    AmtRegSaveFields(Device, Config, g_PalmRegFields, ARRAYSIZE(g_PalmRegFields));
 }
 
 _IRQL_requires_(PASSIVE_LEVEL)
@@ -391,54 +475,12 @@ AmtPointerConfigLoadFromRegistry(
     _Inout_ PAMT_POINTER_CONFIG Config
 )
 {
-    WDFKEY   key;
-    NTSTATUS status;
-
     PAGED_CODE();
 
-    status = WdfDeviceOpenRegistryKey(
-        Device, PLUGPLAY_REGKEY_DEVICE, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key);
-    if (!NT_SUCCESS(status)) {
-        return; // No saved values yet (or no access) - keep compiled-in defaults.
-    }
-
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETAP_THRESHOLD, &Config->ForceTapThreshold);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETAP_ACTION,    &Config->ForceTapAction);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_ENABLED, &Config->ForceTouchEnabled);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE,   &Config->RequirePressureToActivate);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE_CONTINUOUS, &Config->RequirePressureContinuously);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_ACTION_ENABLED, &Config->ForceTouchActionEnabled);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_SMOOTH,      &Config->CursorSmoothingPercent);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_SPEED,       &Config->CursorSpeedPercent);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_DEADZONE,    &Config->CursorDeadzone);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_DEADZONE_SLOW, &Config->CursorDeadzoneSlow);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_DEADZONE_FAST, &Config->CursorDeadzoneFast);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_SLOW_VEL,    &Config->CursorSlowVelocity);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_FAST_VEL,    &Config->CursorFastVelocity);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_ALPHA_DEN,   &Config->SmoothingAlphaDen);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_CURSOR_ALPHA_SLOW,  &Config->SmoothingAlphaNumSlow);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SMALL_CONTACT_REJECTION, &Config->SmallContactRejectionEnabled);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SMALL_CONTACT_REJECTION_STRICT, &Config->SmallContactRejectionStrict);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SMALL_CONTACT_BIRTH_MAJOR_THRESHOLD, &Config->SmallContactBirthMajorThreshold);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SMALL_CONTACT_MAJOR_THRESHOLD, &Config->SmallContactMajorThreshold);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_REJECTION, &Config->ForceTouchSmallContactRejectionEnabled);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_REJECTION_STRICT, &Config->ForceTouchSmallContactRejectionStrict);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_BIRTH_MAJOR_THRESHOLD, &Config->ForceTouchSmallContactBirthMajorThreshold);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_MAJOR_THRESHOLD, &Config->ForceTouchSmallContactMajorThreshold);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_ENABLED, &Config->ForceTouchEmulationEnabled);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_ACTION,  &Config->ForceTouchEmulationAction);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_HOLD_MS, &Config->ForceTouchEmulationHoldMs);
-    // BUGFIX: these two were introduced alongside the three above but never
-    // wired into Load/Save, so a user-tuned drag-lockout distance silently
-    // reverted to default on every D0Entry/reboot instead of persisting.
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCE_TAP_DRAG_LOCKOUT_DISTANCE, &Config->ForceTapDragLockoutDistance);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_DRAG_LOCKOUT_DISTANCE, &Config->ForceTouchEmulationDragLockoutDistance);
-
-    WdfRegistryClose(key);
-
-    // A value loaded straight from the registry is untrusted input the
-    // same as anything arriving over the SET IOCTL - clamp it too.
-    AmtPointerConfigClamp(Config);
+    // A value loaded straight from the registry is untrusted input the same
+    // as anything arriving over the SET IOCTL - clamp it too.
+    if (AmtRegLoadFields(Device, Config, g_PointerRegFields, ARRAYSIZE(g_PointerRegFields)))
+        AmtPointerConfigClamp(Config);
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -448,172 +490,137 @@ AmtPointerConfigSaveToRegistry(
     _In_ const AMT_POINTER_CONFIG* Config
 )
 {
-    WDFKEY   key;
-    NTSTATUS status;
-
-    // Same PASSIVE_LEVEL rationale as AmtPalmConfigSaveToRegistry above -
-    // the SET IOCTL handler always runs at PASSIVE_LEVEL.
-    status = WdfDeviceOpenRegistryKey(
-        Device, PLUGPLAY_REGKEY_DEVICE, KEY_WRITE, WDF_NO_OBJECT_ATTRIBUTES, &key);
-    if (!NT_SUCCESS(status)) {
-        return; // Best-effort - in-memory config is already applied regardless.
-    }
-
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETAP_THRESHOLD, Config->ForceTapThreshold);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETAP_ACTION,    Config->ForceTapAction);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_ENABLED, Config->ForceTouchEnabled);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE,   Config->RequirePressureToActivate);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_REQUIRE_PRESSURE_CONTINUOUS, Config->RequirePressureContinuously);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_ACTION_ENABLED, Config->ForceTouchActionEnabled);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_SMOOTH,      Config->CursorSmoothingPercent);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_SPEED,       Config->CursorSpeedPercent);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_DEADZONE,    Config->CursorDeadzone);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_DEADZONE_SLOW, Config->CursorDeadzoneSlow);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_DEADZONE_FAST, Config->CursorDeadzoneFast);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_SLOW_VEL,    Config->CursorSlowVelocity);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_FAST_VEL,    Config->CursorFastVelocity);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_ALPHA_DEN,   Config->SmoothingAlphaDen);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_CURSOR_ALPHA_SLOW,  Config->SmoothingAlphaNumSlow);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SMALL_CONTACT_REJECTION, Config->SmallContactRejectionEnabled);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SMALL_CONTACT_REJECTION_STRICT, Config->SmallContactRejectionStrict);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SMALL_CONTACT_BIRTH_MAJOR_THRESHOLD, Config->SmallContactBirthMajorThreshold);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SMALL_CONTACT_MAJOR_THRESHOLD, Config->SmallContactMajorThreshold);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_REJECTION, Config->ForceTouchSmallContactRejectionEnabled);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_REJECTION_STRICT, Config->ForceTouchSmallContactRejectionStrict);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_BIRTH_MAJOR_THRESHOLD, Config->ForceTouchSmallContactBirthMajorThreshold);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_SMALL_CONTACT_MAJOR_THRESHOLD, Config->ForceTouchSmallContactMajorThreshold);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_ENABLED, Config->ForceTouchEmulationEnabled);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_ACTION,  Config->ForceTouchEmulationAction);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_HOLD_MS, Config->ForceTouchEmulationHoldMs);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCE_TAP_DRAG_LOCKOUT_DISTANCE, Config->ForceTapDragLockoutDistance);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_FORCETOUCH_EMULATION_DRAG_LOCKOUT_DISTANCE, Config->ForceTouchEmulationDragLockoutDistance);
-
-    WdfRegistryClose(key);
+    AmtRegSaveFields(Device, Config, g_PointerRegFields, ARRAYSIZE(g_PointerRegFields));
 }
 
 _IRQL_requires_(PASSIVE_LEVEL)
 VOID
-AmtScrollConfigLoadFromRegistry(_In_ WDFDEVICE Device, _Inout_ PAMT_SCROLL_CONFIG Config)
+AmtScrollConfigLoadFromRegistry(
+    _In_ WDFDEVICE Device,
+    _Inout_ PAMT_SCROLL_CONFIG Config
+)
 {
-    WDFKEY key;
-    NTSTATUS status;
     PAGED_CODE();
-    status = WdfDeviceOpenRegistryKey(Device, PLUGPLAY_REGKEY_DEVICE, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &key);
-    if (!NT_SUCCESS(status)) return;
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_SPEED,      &Config->SpeedPercent);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_FAST_SPEED, &Config->FastSpeedPercent);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_SMOOTH,     &Config->SmoothingPercent);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_DEADZONE,   &Config->Deadzone);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_FAST_VEL,   &Config->FastVelocity);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_SCALE_NUM,  &Config->ScaleNum);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_SCALE_DEN,  &Config->ScaleDen);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_SCALE_NUM_FAST, &Config->ScaleNumFast);
-    AmtRegistryReadDword(key, AMT_REG_VALUE_SCROLL_SCALE_DEN_FAST, &Config->ScaleDenFast);
-    WdfRegistryClose(key);
-    AmtScrollConfigClamp(Config);
+
+    // A value loaded straight from the registry is untrusted input the same
+    // as anything arriving over the SET IOCTL - clamp it too.
+    if (AmtRegLoadFields(Device, Config, g_ScrollRegFields, ARRAYSIZE(g_ScrollRegFields)))
+        AmtScrollConfigClamp(Config);
 }
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID
-AmtScrollConfigSaveToRegistry(_In_ WDFDEVICE Device, _In_ const AMT_SCROLL_CONFIG* Config)
+AmtScrollConfigSaveToRegistry(
+    _In_ WDFDEVICE Device,
+    _In_ const AMT_SCROLL_CONFIG* Config
+)
 {
-    WDFKEY key;
-    NTSTATUS status = WdfDeviceOpenRegistryKey(Device, PLUGPLAY_REGKEY_DEVICE, KEY_WRITE, WDF_NO_OBJECT_ATTRIBUTES, &key);
-    if (!NT_SUCCESS(status)) return;
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_SPEED,      Config->SpeedPercent);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_FAST_SPEED, Config->FastSpeedPercent);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_SMOOTH,     Config->SmoothingPercent);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_DEADZONE,   Config->Deadzone);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_FAST_VEL,   Config->FastVelocity);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_SCALE_NUM,  Config->ScaleNum);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_SCALE_DEN,  Config->ScaleDen);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_SCALE_NUM_FAST, Config->ScaleNumFast);
-    AmtRegistryWriteDword(key, AMT_REG_VALUE_SCROLL_SCALE_DEN_FAST, Config->ScaleDenFast);
-    WdfRegistryClose(key);
+    AmtRegSaveFields(Device, Config, g_ScrollRegFields, ARRAYSIZE(g_ScrollRegFields));
 }
 
 // ----------------------------------------------------------------------------
 // IOCTL handlers - dispatched from Queue.c's EvtIoDeviceControl.
 // ----------------------------------------------------------------------------
 
+// ----------------------------------------------------------------------------
+// Shared plumbing for the Get/Set config IOCTLs. The palm, pointer and scroll
+// handlers differ only in the config type, its clamp/rebuild/save calls and
+// which context field they touch; everything else (buffer retrieval,
+// StateLock-guarded copy, echo of the clamped result) lives here once.
+// ----------------------------------------------------------------------------
+
+// Copy a config out to the caller's output buffer under StateLock.
+static NTSTATUS
+AmtCfgGet(
+    _In_ PDEVICE_CONTEXT ctx,
+    _In_ WDFREQUEST      Request,
+    _In_ const VOID*     Src,
+    _In_ size_t          Size
+)
+{
+    PVOID    out;
+    NTSTATUS status = WdfRequestRetrieveOutputBuffer(Request, Size, &out, NULL);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    WdfSpinLockAcquire(ctx->StateLock);
+    RtlCopyMemory(out, Src, Size);
+    WdfSpinLockRelease(ctx->StateLock);
+
+    WdfRequestSetInformation(Request, Size);
+    return STATUS_SUCCESS;
+}
+
+// Copy the caller's input buffer into Dest before anything validates or
+// applies it - the buffer is still user-influenced, never trust it in place.
+static NTSTATUS
+AmtCfgReadInput(
+    _In_  WDFREQUEST Request,
+    _In_  size_t     Size,
+    _Out_ PVOID      Dest
+)
+{
+    PVOID    in;
+    NTSTATUS status = WdfRequestRetrieveInputBuffer(Request, Size, &in, NULL);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    RtlCopyMemory(Dest, in, Size);
+    return STATUS_SUCCESS;
+}
+
+// Echo the clamped values back (best-effort) so the GUI immediately reflects
+// any adjustment the driver made to an out-of-range input, instead of a
+// slider silently drifting from what is actually in effect.
+static VOID
+AmtCfgEcho(
+    _In_ WDFREQUEST  Request,
+    _In_ const VOID* Src,
+    _In_ size_t      Size
+)
+{
+    PVOID out;
+    if (NT_SUCCESS(WdfRequestRetrieveOutputBuffer(Request, Size, &out, NULL))) {
+        RtlCopyMemory(out, Src, Size);
+        WdfRequestSetInformation(Request, Size);
+    }
+}
+
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS
 AmtPtpGetPalmConfig(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
-    NTSTATUS         status;
-    PDEVICE_CONTEXT  pDeviceContext;
-    PAMT_PALM_CONFIG pOutConfig;
-    size_t           outLen = 0;
-
-    pDeviceContext = DeviceGetContext(Device);
-
-    status = WdfRequestRetrieveOutputBuffer(
-        Request, sizeof(AMT_PALM_CONFIG), (PVOID*)&pOutConfig, &outLen);
-    if (!NT_SUCCESS(status)) {
-        goto exit;
-    }
-
-    WdfSpinLockAcquire(pDeviceContext->StateLock);
-    *pOutConfig = pDeviceContext->PalmConfig;
-    WdfSpinLockRelease(pDeviceContext->StateLock);
-
-    WdfRequestSetInformation(Request, sizeof(AMT_PALM_CONFIG));
-    status = STATUS_SUCCESS;
-
-exit:
-    return status;
+    PDEVICE_CONTEXT ctx = DeviceGetContext(Device);
+    return AmtCfgGet(ctx, Request, &ctx->PalmConfig, sizeof(AMT_PALM_CONFIG));
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS
 AmtPtpSetPalmConfig(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
-    NTSTATUS         status;
-    PDEVICE_CONTEXT  pDeviceContext;
-    PAMT_PALM_CONFIG pInConfig;
-    size_t           inLen = 0;
-    AMT_PALM_CONFIG  clamped;
+    PDEVICE_CONTEXT ctx = DeviceGetContext(Device);
+    AMT_PALM_CONFIG clamped;
 
-    pDeviceContext = DeviceGetContext(Device);
+    NTSTATUS status = AmtCfgReadInput(Request, sizeof(clamped), &clamped);
+    if (!NT_SUCCESS(status))
+        return status;
 
-    status = WdfRequestRetrieveInputBuffer(
-        Request, sizeof(AMT_PALM_CONFIG), (PVOID*)&pInConfig, &inLen);
-    if (!NT_SUCCESS(status)) {
-        goto exit;
-    }
-
-    // Copy out of the (still user-influenced) buffer before validating/
-    // applying, then clamp every field into a safe range - never trust the
-    // GUI (or anything else calling this IOCTL) to have done that itself.
-    clamped = *pInConfig;
+    // Clamp every field into a safe range - never trust the GUI (or anything
+    // else calling this IOCTL) to have done that itself.
     AmtPalmConfigClamp(&clamped);
 
-    WdfSpinLockAcquire(pDeviceContext->StateLock);
-    pDeviceContext->PalmConfig = clamped;
-    AmtPalmRuntimeRebuild(&clamped, &pDeviceContext->PalmRuntime);
-    WdfSpinLockRelease(pDeviceContext->StateLock);
+    WdfSpinLockAcquire(ctx->StateLock);
+    ctx->PalmConfig = clamped;
+    AmtPalmRuntimeRebuild(&clamped, &ctx->PalmRuntime);
+    WdfSpinLockRelease(ctx->StateLock);
 
     // Persist so the choice survives a reboot/replug, same as an Elan/
     // Synaptics OEM panel's "Apply" button. Best-effort - see
     // AmtPalmConfigSaveToRegistry.
     AmtPalmConfigSaveToRegistry(Device, &clamped);
 
-    // Echo the clamped values back so the GUI can immediately reflect any
-    // adjustment the driver made to an out-of-range input, instead of the
-    // slider silently drifting from what's actually in effect.
-    {
-        PAMT_PALM_CONFIG pOutConfig;
-        size_t           outLen = 0;
-        if (NT_SUCCESS(WdfRequestRetrieveOutputBuffer(
-                Request, sizeof(AMT_PALM_CONFIG), (PVOID*)&pOutConfig, &outLen))) {
-            *pOutConfig = clamped;
-            WdfRequestSetInformation(Request, sizeof(AMT_PALM_CONFIG));
-        }
-    }
-
-    status = STATUS_SUCCESS;
-
-exit:
-    return status;
+    AmtCfgEcho(Request, &clamped, sizeof(clamped));
+    return STATUS_SUCCESS;
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -690,75 +697,34 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS
 AmtPtpGetPointerConfig(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
-    NTSTATUS            status;
-    PDEVICE_CONTEXT     pDeviceContext;
-    PAMT_POINTER_CONFIG pOutConfig;
-    size_t              outLen = 0;
-
-    pDeviceContext = DeviceGetContext(Device);
-
-    status = WdfRequestRetrieveOutputBuffer(
-        Request, sizeof(AMT_POINTER_CONFIG), (PVOID*)&pOutConfig, &outLen);
-    if (!NT_SUCCESS(status)) {
-        goto exit;
-    }
-
-    WdfSpinLockAcquire(pDeviceContext->StateLock);
-    *pOutConfig = pDeviceContext->PointerConfig;
-    WdfSpinLockRelease(pDeviceContext->StateLock);
-
-    WdfRequestSetInformation(Request, sizeof(AMT_POINTER_CONFIG));
-    status = STATUS_SUCCESS;
-
-exit:
-    return status;
+    PDEVICE_CONTEXT ctx = DeviceGetContext(Device);
+    return AmtCfgGet(ctx, Request, &ctx->PointerConfig, sizeof(AMT_POINTER_CONFIG));
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS
 AmtPtpSetPointerConfig(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
-    NTSTATUS            status;
-    PDEVICE_CONTEXT     pDeviceContext;
-    PAMT_POINTER_CONFIG pInConfig;
-    size_t              inLen = 0;
-    AMT_POINTER_CONFIG  clamped;
+    PDEVICE_CONTEXT    ctx = DeviceGetContext(Device);
+    AMT_POINTER_CONFIG clamped;
 
-    pDeviceContext = DeviceGetContext(Device);
+    NTSTATUS status = AmtCfgReadInput(Request, sizeof(clamped), &clamped);
+    if (!NT_SUCCESS(status))
+        return status;
 
-    status = WdfRequestRetrieveInputBuffer(
-        Request, sizeof(AMT_POINTER_CONFIG), (PVOID*)&pInConfig, &inLen);
-    if (!NT_SUCCESS(status)) {
-        goto exit;
-    }
-
-    // Same pattern as AmtPtpSetPalmConfig: copy out, clamp, apply, persist,
-    // echo the clamped result back.
-    clamped = *pInConfig;
+    // Same pattern as AmtPtpSetPalmConfig: clamp, apply, persist, echo.
     AmtPointerConfigClamp(&clamped);
 
-    WdfSpinLockAcquire(pDeviceContext->StateLock);
-    pDeviceContext->PointerConfig = clamped;
-    AmtPointerRuntimeRebuild(&clamped, &pDeviceContext->PointerRuntime);
-    AmtPointerForceTouchTimingRebuild(pDeviceContext);
-    WdfSpinLockRelease(pDeviceContext->StateLock);
+    WdfSpinLockAcquire(ctx->StateLock);
+    ctx->PointerConfig = clamped;
+    AmtPointerRuntimeRebuild(&clamped, &ctx->PointerRuntime);
+    AmtPointerForceTouchTimingRebuild(ctx);
+    WdfSpinLockRelease(ctx->StateLock);
 
     AmtPointerConfigSaveToRegistry(Device, &clamped);
 
-    {
-        PAMT_POINTER_CONFIG pOutConfig;
-        size_t              outLen = 0;
-        if (NT_SUCCESS(WdfRequestRetrieveOutputBuffer(
-                Request, sizeof(AMT_POINTER_CONFIG), (PVOID*)&pOutConfig, &outLen))) {
-            *pOutConfig = clamped;
-            WdfRequestSetInformation(Request, sizeof(AMT_POINTER_CONFIG));
-        }
-    }
-
-    status = STATUS_SUCCESS;
-
-exit:
-    return status;
+    AmtCfgEcho(Request, &clamped, sizeof(clamped));
+    return STATUS_SUCCESS;
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -785,45 +751,31 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS
 AmtPtpGetScrollConfig(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
-    NTSTATUS status;
     PDEVICE_CONTEXT ctx = DeviceGetContext(Device);
-    PAMT_SCROLL_CONFIG outConfig;
-    size_t outLen = 0;
-    status = WdfRequestRetrieveOutputBuffer(Request, sizeof(AMT_SCROLL_CONFIG), (PVOID*)&outConfig, &outLen);
-    if (!NT_SUCCESS(status)) return status;
-    WdfSpinLockAcquire(ctx->StateLock);
-    *outConfig = ctx->ScrollConfig;
-    WdfSpinLockRelease(ctx->StateLock);
-    WdfRequestSetInformation(Request, sizeof(AMT_SCROLL_CONFIG));
-    return STATUS_SUCCESS;
+    return AmtCfgGet(ctx, Request, &ctx->ScrollConfig, sizeof(AMT_SCROLL_CONFIG));
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS
 AmtPtpSetScrollConfig(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
-    NTSTATUS status;
-    PDEVICE_CONTEXT ctx = DeviceGetContext(Device);
-    PAMT_SCROLL_CONFIG inConfig;
-    size_t inLen = 0;
+    PDEVICE_CONTEXT   ctx = DeviceGetContext(Device);
     AMT_SCROLL_CONFIG clamped;
-    status = WdfRequestRetrieveInputBuffer(Request, sizeof(AMT_SCROLL_CONFIG), (PVOID*)&inConfig, &inLen);
-    if (!NT_SUCCESS(status)) return status;
-    clamped = *inConfig;
+
+    NTSTATUS status = AmtCfgReadInput(Request, sizeof(clamped), &clamped);
+    if (!NT_SUCCESS(status))
+        return status;
+
     AmtScrollConfigClamp(&clamped);
+
     WdfSpinLockAcquire(ctx->StateLock);
     ctx->ScrollConfig = clamped;
     AmtScrollRuntimeRebuild(&clamped, &ctx->ScrollRuntime);
     WdfSpinLockRelease(ctx->StateLock);
+
     AmtScrollConfigSaveToRegistry(Device, &clamped);
-    {
-        PAMT_SCROLL_CONFIG outConfig;
-        size_t outLen = 0;
-        if (NT_SUCCESS(WdfRequestRetrieveOutputBuffer(Request, sizeof(AMT_SCROLL_CONFIG), (PVOID*)&outConfig, &outLen))) {
-            *outConfig = clamped;
-            WdfRequestSetInformation(Request, sizeof(AMT_SCROLL_CONFIG));
-        }
-    }
+
+    AmtCfgEcho(Request, &clamped, sizeof(clamped));
     return STATUS_SUCCESS;
 }
 
