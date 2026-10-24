@@ -147,6 +147,14 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
     // receive an UP for an ID it never saw go down, so lift paths consult
     // this. Cleared on birth and on identity rebind.
     BOOLEAN Announced;
+
+    // TRUE once this identity has been reported to Windows with Confidence=0
+    // (frozen under a palm / in the edge dead zone). Windows treats a
+    // contact that was ever reported unconfident as a palm for the rest of
+    // its lifetime and ignores it even if Confidence=1 follows, so such an
+    // identity must be retired (UP) and re-born under a new ContactID once
+    // it qualifies as a finger again. Cleared on birth and on rebind.
+    BOOLEAN PalmFrozen;
 } ACTIVE_CONTACT, *PACTIVE_CONTACT;
 
 // Keep each pool element exactly one 64-byte cache line.

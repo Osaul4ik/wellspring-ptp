@@ -269,6 +269,7 @@ AmtContactBirthCommon(
     c->CarryX              = 0;
     c->CarryY              = 0;
     c->Announced           = FALSE;
+    c->PalmFrozen          = FALSE;
     c->SoloMs              = 0;
     c->HystAgeTicks        = 0;
     c->ScrollFilteredX     = 0;
@@ -366,6 +367,7 @@ AmtContactRebindIdentity(
     *OldContactID = c->ContactID;
     c->ContactID  = AmtContactAssignId(NextContactId);
     c->Announced  = FALSE; // the new identity has not been reported yet
+    c->PalmFrozen = FALSE; // ...and was never reported unconfident
 }
 
 VOID

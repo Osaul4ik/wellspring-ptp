@@ -511,8 +511,10 @@ PTPCore_ProcessFrame(
 
             if (AmtCoreEmitContact(pCtx, OutResult, ac->ContactID,
                                    ac->EmitX, ac->EmitY,
-                                   CONTACT_PHASE_MOVE, FALSE))
-                ac->Announced = TRUE;
+                                   CONTACT_PHASE_MOVE, FALSE)) {
+                ac->Announced   = TRUE;
+                ac->PalmFrozen  = TRUE; // Windows now sees this ID as palm
+            }
             continue;
         }
 
@@ -637,6 +639,32 @@ PTPCore_ProcessFrame(
             // AmtContactUpdate overwrites it with real NowQpc shortly after.
             ac->LastSeenQpc = 0;
         }
+    }
+
+    // Phase A.6 (palm-freeze rebirth): a contact that was frozen under a
+    // palm / edge zone was reported with Confidence=0, and Windows keeps
+    // ignoring such an identity until it lifts. Now that it matches a
+    // finger-qualified candidate again, retire the old ID (UP) and re-born
+    // it in place under a new ContactID (DOWN this frame) - same mechanism
+    // as the button-click rebind above.
+    for (UCHAR ci = 0; ci < candidates.Count; ci++) {
+        if (candidates.Candidates[ci].PalmLocal) continue;
+
+        size_t p = matchResult.CorrespondingPoolIndex[ci];
+        if (p == MATCH_NO_CORRESPONDENCE) continue;
+        PACTIVE_CONTACT ac = &pCtx->ActiveContacts[p];
+        if (!ac->PalmFrozen) continue;
+        if (rebindThisFrame[p]) { ac->PalmFrozen = FALSE; continue; }
+
+        USHORT oldX = ac->EmitX;
+        USHORT oldY = ac->EmitY;
+        ULONG  oldId;
+        const BOOLEAN announcedOld = ac->Announced;
+        AmtContactRebindIdentity(pCtx->ActiveContacts, p, &pCtx->NextContactId, &oldId);
+        AmtCoreEmitLift(pCtx, OutResult, announcedOld, oldId, oldX, oldY);
+
+        rebindThisFrame[p] = TRUE;
+        ac->LastSeenQpc    = 0; // force DOWN (not MOVE) for the new ContactID
     }
 
     AmtContactPoolCheckInvariants(pCtx->ActiveContacts);
