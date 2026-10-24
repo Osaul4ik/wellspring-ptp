@@ -1132,10 +1132,11 @@ PTPCore_ProcessFrame(
             pCtx->ClickArbitrationStallFrames   = 0;
         }
 
-        // Holding a confirmed hardware Force Touch past the configurable
-        // limit converts it to a normal held button. The start timestamp
-        // is captured on the physical button-down edge (IDLE -> PENDING).
-        if (forceTouchHardwareActive &&
+        // For hardware and emulation, holding a confirmed Force Touch past
+        // the configurable hard-tap limit converts it to a normal held button.
+        // The clock starts at the physical press edge (IDLE -> PENDING),
+        // NOT when either force-touch mode first becomes active.
+        if ((forceTouchHardwareActive || forceTouchEmulationActive) &&
             pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH &&
             pCtx->PerfFrequency.QuadPart > 0 &&
             NowQpc >= pCtx->ClickArbitrationStartQpc &&

@@ -347,14 +347,18 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         &coreFrame,
         &Report);
 
-    // Freeze only while arbitrating a physical force press. When the
-    // physical button is released without lifting the finger, preserve the
+    // Freeze while arbitrating either a hardware or an emulated force press.
+    // Both paths use the physical button edge and the same HARD_TAP result.
+    // When the physical button is released without lifting the finger,
+    // preserve the
     // anchor with a translated motion baseline. Clearing the latch here
     // would snap the contact back to the sensor coordinate; continuing to
     // freeze it would make the cursor appear stuck until finger lift.
-    if (pCtx->SupportsForceTouch &&
-        pCtx->PointerConfig.ForceTouchEnabled &&
-        pCtx->PointerConfig.ForceTouchActionEnabled) {
+    if ((pCtx->SupportsForceTouch &&
+         pCtx->PointerConfig.ForceTouchEnabled &&
+         pCtx->PointerConfig.ForceTouchActionEnabled) ||
+        (!pCtx->SupportsForceTouch &&
+         pCtx->PointerConfig.ForceTouchEmulationEnabled)) {
         PTP_CONTACT* tracked = NULL;
         ULONG i;
         BOOLEAN newPress = buttonSnapshot && !pCtx->ForceMotionWasPressed;
