@@ -326,52 +326,49 @@ PTPCore_ProcessFrame(
             USHORT    nearX = 0, nearY = 0;
 
             palmStillThere = FALSE;
-            for (UCHAR pi = 0; pi < candidates.Count; pi++) {
-                const MATCH_CANDIDATE* pc = &candidates.Candidates[pi];
 
-                // A finger that was already down BEFORE the palm landed is
-                // still in the pool (frozen at its last position while the
-                // palm blanks the pad). It is not part of the palm: if it
-                // were allowed to count, the anchor would hop onto it once
-                // the palm lifts and the latch would never release while
-                // that finger stays down. Palm remnants never have a pool
-                // entry (candidates are suppressed while the latch is set,
-                // so nothing is born during it).
-                // It counts as that finger only if it is the candidate
-                // nearest to the frozen entry; a palm remnant that happens
-                // to sit beside the finger is farther from the entry than
-                // the finger's own candidate and stays a remnant.
-                BOOLEAN isPreExistingFinger = FALSE;
-                for (size_t pp = 0; pp < MAX_CONTACTS && !isPreExistingFinger; pp++) {
-                    const ACTIVE_CONTACT* pe = &pCtx->ActiveContacts[pp];
-                    if (pe->State != CONTACT_ACTIVE)
-                        continue;
-                    INT edx = AmtAbsDelta((INT)pc->X, (INT)pe->ReportX);
-                    INT edy = AmtAbsDelta((INT)pc->Y, (INT)pe->ReportY);
+            // Fingers that were already down BEFORE the palm landed are still
+            // in the pool (frozen at their last position while the palm
+            // blanks the pad). They are not part of the palm: if one counted,
+            // the anchor would hop onto it once the palm lifts and the latch
+            // would never release while that finger stays down. Palm
+            // remnants never have a pool entry (candidates are suppressed
+            // while the latch is set, so nothing is born during it). A
+            // frozen entry claims only its NEAREST candidate within the
+            // birth-proximity box, so a remnant beside the finger stays a
+            // remnant.
+            UCHAR fingerMask = 0;
+            for (size_t pp = 0; pp < MAX_CONTACTS; pp++) {
+                const ACTIVE_CONTACT* pe = &pCtx->ActiveContacts[pp];
+                if (pe->State != CONTACT_ACTIVE)
+                    continue;
+                ULONGLONG nearest = ~0ULL;
+                UCHAR     nearestIdx = 0xFF;
+                for (UCHAR ci = 0; ci < candidates.Count; ci++) {
+                    INT edx = AmtAbsDelta((INT)candidates.Candidates[ci].X, (INT)pe->ReportX);
+                    INT edy = AmtAbsDelta((INT)candidates.Candidates[ci].Y, (INT)pe->ReportY);
                     if (edx > MATCH_BIRTH_PROXIMITY_DELTA || edy > MATCH_BIRTH_PROXIMITY_DELTA)
                         continue;
-                    ULONGLONG myDsq = AmtDistSq(edx, edy);
-                    BOOLEAN   closerExists = FALSE;
-                    for (UCHAR oi = 0; oi < candidates.Count; oi++) {
-                        if (oi == pi) continue;
-                        const MATCH_CANDIDATE* oc = &candidates.Candidates[oi];
-                        if (AmtDistSq(AmtAbsDelta((INT)oc->X, (INT)pe->ReportX),
-                                      AmtAbsDelta((INT)oc->Y, (INT)pe->ReportY)) < myDsq) {
-                            closerExists = TRUE;
-                            break;
-                        }
-                    }
-                    if (!closerExists)
-                        isPreExistingFinger = TRUE;
+                    ULONGLONG d = AmtDistSq(edx, edy);
+                    if (d < nearest) { nearest = d; nearestIdx = ci; }
                 }
-                if (isPreExistingFinger)
+                if (nearestIdx != 0xFF)
+                    fingerMask |= (UCHAR)(1u << nearestIdx);
+            }
+
+            // Wide capture only until the first remnant is acquired after a
+            // large-palm frame (anchor is then the palm's centroid).
+            const INT radius = pCtx->PalmAnchorFresh
+                                   ? PALM_LATCH_CAPTURE_RADIUS
+                                   : PALM_LATCH_RELEASE_RADIUS;
+
+            for (UCHAR pi = 0; pi < candidates.Count; pi++) {
+                if (fingerMask & (1u << pi))
                     continue;
+                const MATCH_CANDIDATE* pc = &candidates.Candidates[pi];
 
                 INT pdx = AmtAbsDelta((INT)pc->X, (INT)pCtx->PalmAnchorX);
                 INT pdy = AmtAbsDelta((INT)pc->Y, (INT)pCtx->PalmAnchorY);
-                const INT radius = pCtx->PalmAnchorFresh
-                                       ? PALM_LATCH_CAPTURE_RADIUS
-                                       : PALM_LATCH_RELEASE_RADIUS;
                 if (pdx > radius || pdy > radius)
                     continue;
                 ULONGLONG pd = AmtDistSq(pdx, pdy);
@@ -622,70 +619,49 @@ PTPCore_ProcessFrame(
         matchResult.CorrespondingPoolIndex[ci] = MATCH_NO_CORRESPONDENCE;
     }
 
-    // Phase A.5 (button-click forced rebirth): on the RISING edge of the
-    // integrated button, force a new ContactID onto every still-live,
-    // pre-existing matched contact, in place, at its own position. Routes
-    // the click through the non-snapping soft-tap TipSwitch path. The pool
-    // slot is NOT freed/reacquired - WasInGesture/FramesAlive/HystX/Y/
-    // ReportX/Y/EmitX/Y carry across since the finger never left the pad.
-    // Pre-existing == LastSeenQpc != 0; contacts born THIS frame are skipped.
+    // Phase A.5 (forced rebirth): force a new ContactID, in place, at its own
+    // position, onto every still-live, pre-existing matched contact when
+    //  - the integrated button has a RISING edge: routes the click through
+    //    the non-snapping soft-tap TipSwitch path; or
+    //  - the contact was frozen under a palm / edge zone (PalmFrozen): it
+    //    was reported with Confidence=0, Windows keeps ignoring such an
+    //    identity until it lifts, so now that it is a finger again the old
+    //    ID is retired (UP) and the contact re-born (DOWN this frame).
+    // The pool slot is NOT freed/reacquired - WasInGesture/FramesAlive/
+    // HystX/Y/ReportX/Y/EmitX/Y carry across since the finger never left
+    // the pad. Pre-existing == LastSeenQpc != 0; contacts born THIS frame
+    // are skipped.
     BOOLEAN rebindThisFrame[MAX_CONTACTS] = { 0 };
 
-    if (buttonClickEdge) {
-        for (UCHAR ci = 0; ci < candidates.Count; ci++) {
-            if (candidates.Candidates[ci].PalmLocal) continue;
-
-            size_t p = matchResult.CorrespondingPoolIndex[ci];
-            if (p == MATCH_NO_CORRESPONDENCE) continue;
-            PACTIVE_CONTACT ac = &pCtx->ActiveContacts[p];
-            if (ac->LastSeenQpc == 0) continue; // born this frame
-
-            // UP for the old identity goes where Windows last saw it.
-            USHORT oldX = ac->EmitX;
-            USHORT oldY = ac->EmitY;
-
-            ULONG oldId;
-            const BOOLEAN announcedOld = ac->Announced; // rebind clears it
-            AmtContactRebindIdentity(pCtx->ActiveContacts, p, &pCtx->NextContactId, &oldId);
-            AmtCoreEmitLift(pCtx, OutResult, announcedOld, oldId, oldX, oldY);
-            // Deliberately NOT AmtRecentLiftRecord'd - not a real lift and
-            // must not seed retap-smoothing for unrelated future taps.
-
-            rebindThisFrame[p] = TRUE;
-
-            // AUDIT FIX: rebind doesn't touch LastSeenQpc, but Phase C
-            // decides DOWN-vs-MOVE purely from (LastSeenQpc == 0). Without
-            // forcing it to 0, the new ContactID would report MOVE instead
-            // of DOWN, defeating the non-snapping soft-tap path.
-            // AmtContactUpdate overwrites it with real NowQpc shortly after.
-            ac->LastSeenQpc = 0;
-        }
-    }
-
-    // Phase A.6 (palm-freeze rebirth): a contact that was frozen under a
-    // palm / edge zone was reported with Confidence=0, and Windows keeps
-    // ignoring such an identity until it lifts. Now that it matches a
-    // finger-qualified candidate again, retire the old ID (UP) and re-born
-    // it in place under a new ContactID (DOWN this frame) - same mechanism
-    // as the button-click rebind above.
     for (UCHAR ci = 0; ci < candidates.Count; ci++) {
         if (candidates.Candidates[ci].PalmLocal) continue;
 
         size_t p = matchResult.CorrespondingPoolIndex[ci];
         if (p == MATCH_NO_CORRESPONDENCE) continue;
         PACTIVE_CONTACT ac = &pCtx->ActiveContacts[p];
-        if (!ac->PalmFrozen) continue;
-        if (rebindThisFrame[p]) { ac->PalmFrozen = FALSE; continue; }
+        if (!buttonClickEdge && !ac->PalmFrozen) continue;
+        if (ac->LastSeenQpc == 0) continue; // born this frame
 
+        // UP for the old identity goes where Windows last saw it.
         USHORT oldX = ac->EmitX;
         USHORT oldY = ac->EmitY;
-        ULONG  oldId;
-        const BOOLEAN announcedOld = ac->Announced;
+
+        ULONG oldId;
+        const BOOLEAN announcedOld = ac->Announced; // rebind clears it
         AmtContactRebindIdentity(pCtx->ActiveContacts, p, &pCtx->NextContactId, &oldId);
         AmtCoreEmitLift(pCtx, OutResult, announcedOld, oldId, oldX, oldY);
+        // Deliberately NOT AmtRecentLiftRecord'd - not a real lift and
+        // must not seed retap-smoothing for unrelated future taps.
+        // (Rebind also clears PalmFrozen.)
 
         rebindThisFrame[p] = TRUE;
-        ac->LastSeenQpc    = 0; // force DOWN (not MOVE) for the new ContactID
+
+        // AUDIT FIX: rebind doesn't touch LastSeenQpc, but Phase C
+        // decides DOWN-vs-MOVE purely from (LastSeenQpc == 0). Without
+        // forcing it to 0, the new ContactID would report MOVE instead
+        // of DOWN, defeating the non-snapping soft-tap path.
+        // AmtContactUpdate overwrites it with real NowQpc shortly after.
+        ac->LastSeenQpc = 0;
     }
 
     AmtContactPoolCheckInvariants(pCtx->ActiveContacts);
