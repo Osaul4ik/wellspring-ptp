@@ -237,7 +237,7 @@ typedef struct _DEVICE_CONTEXT
     // Button Down. The first ordinary drag report uses this origin, then
     // subsequent reports resume live coordinates. Protected by StateLock.
     BOOLEAN ForceTouchDragOriginValid;
-    UCHAR   ForceTouchDragContactId;
+    ULONG   ForceTouchDragContactId;
     USHORT  ForceTouchDragOriginX;
     USHORT  ForceTouchDragOriginY;
 
