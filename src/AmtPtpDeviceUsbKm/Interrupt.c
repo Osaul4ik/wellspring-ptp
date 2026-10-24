@@ -359,6 +359,53 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         &coreFrame,
         &Report);
 
+    // Drag-origin preservation: while a force press is being classified,
+    // Windows has not seen Button Down yet. Letting the pointer move would
+    // make window dragging/resizing start at the eventual lockout point.
+    // Hold only the serialized single-finger contact at the first pressed
+    // coordinate; on the first HARD_TAP frame publish Button Down there,
+    // then pass subsequent positions through normally. Never modify the
+    // core frame/contact pool, multi-finger gestures, or the live monitor.
+    // StateLock covers this state and PTPCore's arbitration state.
+    {
+        const BOOLEAN forceActionActive =
+            (pCtx->SupportsForceTouch &&
+             pCtx->PointerConfig.ForceTouchEnabled &&
+             pCtx->PointerConfig.ForceTouchActionEnabled) ||
+            (!pCtx->SupportsForceTouch &&
+             pCtx->PointerConfig.ForceTouchEmulationEnabled);
+        const BOOLEAN singleActiveContact =
+            Report.ContactCount == 1 &&
+            Report.Contacts[0].TipSwitch != 0;
+
+        if (!buttonSnapshot || !forceActionActive || !singleActiveContact) {
+            pCtx->ForceTouchDragOriginValid = FALSE;
+        } else if (!pCtx->ForceTouchDragOriginValid ||
+                   pCtx->ForceTouchDragContactId != Report.Contacts[0].ContactID) {
+            pCtx->ForceTouchDragOriginValid = TRUE;
+            pCtx->ForceTouchDragContactId = Report.Contacts[0].ContactID;
+            pCtx->ForceTouchDragOriginX = Report.Contacts[0].X;
+            pCtx->ForceTouchDragOriginY = Report.Contacts[0].Y;
+        }
+
+        if (pCtx->ForceTouchDragOriginValid && singleActiveContact &&
+            pCtx->ForceTouchDragContactId == Report.Contacts[0].ContactID) {
+            if (pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING ||
+                pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH) {
+                Report.Contacts[0].X = pCtx->ForceTouchDragOriginX;
+                Report.Contacts[0].Y = pCtx->ForceTouchDragOriginY;
+            } else if (pCtx->ClickArbitrationState == CLICK_ARBITRATION_HARD_TAP) {
+                // The first Button Down must carry the origin, not the
+                // position that finally tripped drag lockout.
+                Report.Contacts[0].X = pCtx->ForceTouchDragOriginX;
+                Report.Contacts[0].Y = pCtx->ForceTouchDragOriginY;
+                pCtx->ForceTouchDragOriginValid = FALSE;
+            } else {
+                pCtx->ForceTouchDragOriginValid = FALSE;
+            }
+        }
+    }
+
     // Arbitrated by PTPCore, not the raw button bit.
     if (buttonClickReport) {
         Report.IsButtonClicked = TRUE;
