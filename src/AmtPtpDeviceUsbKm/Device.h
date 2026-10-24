@@ -239,17 +239,6 @@ typedef struct _DEVICE_CONTEXT
     USHORT  ForceTouchAnchorY;
     BOOLEAN ForceTouchDragLockout;
 
-    // Hold the one-finger HID position while force-click arbitration delays
-    // Button Down. The first ordinary drag report uses this origin, then
-    // subsequent reports resume live coordinates. Protected by StateLock.
-    BOOLEAN ForceTouchDragOriginValid;
-    ULONG   ForceTouchDragContactId;
-    USHORT  ForceTouchDragOriginX;
-    USHORT  ForceTouchDragOriginY;
-    BOOLEAN ForceTouchDragTranslated;
-    USHORT  ForceTouchDragStartX;
-    USHORT  ForceTouchDragStartY;
-
     // MICRO-OPT: precomputed by AmtPointerForceTouchTimingRebuild (called at
     // D0Entry and on every Pointer Config SET/RESET IOCTL) from
     // PointerConfig.ForceTouchEmulationHoldMs and PerfFrequency, so
