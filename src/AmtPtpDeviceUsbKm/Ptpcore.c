@@ -237,6 +237,39 @@ AmtCoreDrainOverflow(
     pCtx->OverflowCount = keep;
 }
 
+// Birth-only admission gates (apply only when a brand-new contact would be
+// created; once a candidate corresponds to an active contact it is never
+// re-gated). Two INDEPENDENT gates - a Force-Touch device can be rejected by
+// either, both, or neither:
+//  - pressure gate (Force-Touch only): positive pressure required when
+//    configured;
+//  - small-contact gate (both device kinds): own enable flag and GUI-tunable
+//    "M" (Major) threshold; Minor keeps its fixed
+//    AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD floor. Independent of the
+//    continuous gate in Match.c.
+static inline BOOLEAN
+AmtCoreBirthGated(
+    _In_ const DEVICE_CONTEXT*   pCtx,
+    _In_ const MATCH_CANDIDATE*  cand
+)
+{
+    const AMT_POINTER_CONFIG* pc = &pCtx->PointerConfig;
+
+    if (pCtx->SupportsForceTouch &&
+        pc->ForceTouchEnabled &&
+        pc->RequirePressureToActivate &&
+        cand->Pressure == 0)
+        return TRUE;
+
+    return (BOOLEAN)(
+        cand->Minor < AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD &&
+        (pCtx->SupportsForceTouch
+            ? (pc->ForceTouchSmallContactRejectionEnabled &&
+               cand->Major < pc->ForceTouchSmallContactBirthMajorThreshold)
+            : (pc->SmallContactRejectionEnabled &&
+               cand->Major < pc->SmallContactBirthMajorThreshold)));
+}
+
 // PTPCore_ProcessFrame
 
 VOID
@@ -421,31 +454,7 @@ PTPCore_ProcessFrame(
         BOOLEAN isNewContact =
             (matchResult.CorrespondingPoolIndex[ci] == MATCH_NO_CORRESPONDENCE);
 
-        BOOLEAN pressureGatedBirth =
-            isNewContact &&
-            pCtx->SupportsForceTouch &&
-            pCtx->PointerConfig.ForceTouchEnabled &&
-            pCtx->PointerConfig.RequirePressureToActivate &&
-            cand->Pressure == 0;
-
-        // Birth-only small-contact gate: independent of the pressure gate
-        // above (a Force-Touch device can have both active at once) and
-        // independent of the continuous gate in Match.c. Available on both
-        // device kinds, each with its own enable flag and GUI-tunable "M"
-        // (Major) threshold; Minor keeps its fixed
-        // AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD floor on both.
-        BOOLEAN smallContactGatedBirth =
-            isNewContact &&
-            (pCtx->SupportsForceTouch
-                ? (pCtx->PointerConfig.ForceTouchSmallContactRejectionEnabled &&
-                   cand->Major < pCtx->PointerConfig.ForceTouchSmallContactBirthMajorThreshold &&
-                   cand->Minor < AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD)
-                : (pCtx->PointerConfig.SmallContactRejectionEnabled &&
-                   cand->Major < pCtx->PointerConfig.SmallContactBirthMajorThreshold &&
-                   cand->Minor < AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD));
-
-        if (!pressureGatedBirth &&
-            !smallContactGatedBirth &&
+        if (!(isNewContact && AmtCoreBirthGated(pCtx, cand)) &&
             !cand->PalmLocal &&
             !cand->Unconfirmed)
             aliveCount++;
@@ -674,39 +683,8 @@ PTPCore_ProcessFrame(
             continue; // handled in Phase C
 
         // Admission gates apply ONLY when creating a brand-new contact.
-        // Once a candidate has corresponded to an existing active contact,
-        // Phase C updates/reports it without re-applying these gates.
-        //
-        // Two INDEPENDENT gates, each evaluated on its own condition (not
-        // if/else-if): a Force-Touch device can be rejected by the
-        // pressure gate, the small-contact gate, both, or neither.
-        //
-        // Pressure gate (Force-Touch devices only): require positive
-        // pressure when configured.
-        if (pCtx->SupportsForceTouch &&
-            pCtx->PointerConfig.ForceTouchEnabled &&
-            pCtx->PointerConfig.RequirePressureToActivate &&
-            cand->Pressure == 0)
-        {
+        if (AmtCoreBirthGated(pCtx, cand))
             continue;
-        }
-
-        // Birth-only small-contact gate: available on BOTH device kinds,
-        // each with its own enable flag and GUI-tunable "M" (Major)
-        // threshold; Minor keeps its fixed
-        // AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD floor on both. Not gated
-        // by the pressure check above, and not gated by the continuous
-        // gate's enable flag in Match.c - fully independent.
-        if (pCtx->SupportsForceTouch
-                ? (pCtx->PointerConfig.ForceTouchSmallContactRejectionEnabled &&
-                   cand->Major < pCtx->PointerConfig.ForceTouchSmallContactBirthMajorThreshold &&
-                   cand->Minor < AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD)
-                : (pCtx->PointerConfig.SmallContactRejectionEnabled &&
-                   cand->Major < pCtx->PointerConfig.SmallContactBirthMajorThreshold &&
-                   cand->Minor < AMT_SMALL_CONTACT_BIRTH_MINOR_THRESHOLD))
-        {
-            continue;
-        }
 
         size_t freeIdx = AmtContactPoolFindFree(pCtx->ActiveContacts);
         if (freeIdx == MAX_CONTACTS) {

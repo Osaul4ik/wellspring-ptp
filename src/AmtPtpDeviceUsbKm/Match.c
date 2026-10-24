@@ -209,60 +209,43 @@ AmtMatchBuildCandidates(
     // a defined starting value.
     OutCandidates->Count = 0;
 
+    // Config-derived gates are loop-invariant: resolve them once per frame.
+    BOOLEAN smallGateOn = FALSE;
+    ULONG   smallMajorMin = 0;
+    BOOLEAN requirePressureEveryFrame = FALSE;
+    if (PointerConfig != NULL) {
+        smallGateOn   = (SupportsForceTouch
+                            ? PointerConfig->ForceTouchSmallContactRejectionStrict
+                            : PointerConfig->SmallContactRejectionStrict) != 0;
+        smallMajorMin = SupportsForceTouch
+                            ? PointerConfig->ForceTouchSmallContactMajorThreshold
+                            : PointerConfig->SmallContactMajorThreshold;
+        requirePressureEveryFrame = (BOOLEAN)(SupportsForceTouch &&
+                            PointerConfig->ForceTouchEnabled &&
+                            PointerConfig->RequirePressureContinuously);
+    }
+
     for (UCHAR i = 0; i < RawFrame->ContactCount; i++) {
         const RAW_CONTACT* rc = &RawFrame->Contacts[i];
 
-        // Continuous small-contact gate: independent of the birth-only gate
-        // in Ptpcore.c (its own on/off flag, not gated by
-        // SmallContactRejectionEnabled). Applies every frame, not only at
-        // birth: a contact is eligible for matching/output only when BOTH
-        // dimensions meet the threshold. When either falls below the
-        // threshold, this frame is treated as if the contact were absent;
-        // the normal contact FSM then emits the proper UP for the old
-        // identity and a later qualifying frame can create a fresh DOWN.
-        // Major ("M") threshold is GUI-tunable
-        // (PointerConfig->SmallContactMajorThreshold); Minor keeps its
-        // fixed floor (AMT_SMALL_CONTACT_MINOR_THRESHOLD). Available on
-        // non-Force-Touch devices; see the mirrored Force-Touch gate below.
-        if (!SupportsForceTouch &&
-            PointerConfig != NULL &&
-            PointerConfig->SmallContactRejectionStrict &&
-            (rc->Major < PointerConfig->SmallContactMajorThreshold ||
-             rc->Minor < AMT_SMALL_CONTACT_MINOR_THRESHOLD))
+        // Continuous small-contact gate (independent of the birth-only gate
+        // in Ptpcore.c): every frame, not only at birth, a contact is
+        // eligible for matching/output only when BOTH dimensions meet the
+        // threshold; otherwise this frame treats it as absent (the contact
+        // FSM then emits the UP and a later qualifying frame births a fresh
+        // DOWN). Force-Touch devices use their own flag and GUI-tunable "M"
+        // threshold (off by default); Minor keeps its fixed floor.
+        if (smallGateOn &&
+            (rc->Major < smallMajorMin || rc->Minor < AMT_SMALL_CONTACT_MINOR_THRESHOLD))
         {
             continue;
         }
 
-        // Same continuous gate, mirrored for Force-Touch-capable devices -
-        // independent of ForceTouchSmallContactRejectionEnabled (the
-        // birth-only gate's flag in Ptpcore.c) and independent of the
-        // non-Force-Touch gate above. Normally Force Touch hardware relies
-        // on the pressure gate instead, but this runs in addition to it,
-        // not instead of it - useful for light/ambiguous contacts before
-        // pressure ramps up. Off by default
-        // (ForceTouchSmallContactRejectionStrict = 0); uses its own
-        // GUI-tunable "M" threshold
-        // (PointerConfig->ForceTouchSmallContactMajorThreshold).
-        if (SupportsForceTouch &&
-            PointerConfig != NULL &&
-            PointerConfig->ForceTouchSmallContactRejectionStrict &&
-            (rc->Major < PointerConfig->ForceTouchSmallContactMajorThreshold ||
-             rc->Minor < AMT_SMALL_CONTACT_MINOR_THRESHOLD))
-        {
-            continue;
-        }
-
-        // Optional strict Force-Touch pressure mode: the pressure gate applies
-        // to every frame, not only to the birth of a new contact. A Force-Touch
-        // contact is eligible for matching/output only while pressure is
-        // positive. If pressure drops to zero, this frame is treated as absent;
-        // the normal contact FSM then emits UP for the old identity. A later
-        // frame with positive pressure can create a new DOWN.
-        if (SupportsForceTouch &&
-            PointerConfig != NULL &&
-            PointerConfig->ForceTouchEnabled &&
-            PointerConfig->RequirePressureContinuously &&
-            rc->Pressure == 0)
+        // Optional strict Force-Touch pressure mode: applies to every frame,
+        // not only to the birth. Zero pressure -> frame treated as absent
+        // (UP for the old identity); a later positive-pressure frame can
+        // create a new DOWN.
+        if (requirePressureEveryFrame && rc->Pressure == 0)
         {
             continue;
         }
