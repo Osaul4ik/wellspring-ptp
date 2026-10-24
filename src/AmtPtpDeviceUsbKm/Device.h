@@ -246,6 +246,9 @@ typedef struct _DEVICE_CONTEXT
     ULONG   ForceTouchDragContactId;
     USHORT  ForceTouchDragOriginX;
     USHORT  ForceTouchDragOriginY;
+    BOOLEAN ForceTouchDragTranslated;
+    USHORT  ForceTouchDragStartX;
+    USHORT  ForceTouchDragStartY;
 
     // MICRO-OPT: precomputed by AmtPointerForceTouchTimingRebuild (called at
     // D0Entry and on every Pointer Config SET/RESET IOCTL) from

@@ -1709,6 +1709,7 @@ AmtPtpEvtDeviceD0Entry(
     pDeviceContext->ForceTouchAnchorValid = FALSE;
     pDeviceContext->ForceTouchDragLockout = FALSE;
     pDeviceContext->ForceTouchDragOriginValid = FALSE;
+    pDeviceContext->ForceTouchDragTranslated = FALSE;
     // Drop pending/in-flight force-touch clicks from the previous power
     // session - nothing was delivered to a live HID client across a D0
     // transition, so there's no in-flight UP to worry about orphaning.

@@ -347,14 +347,13 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         &coreFrame,
         &Report);
 
-    // Drag-origin preservation: while a force press is being classified,
-    // Windows has not seen Button Down yet. Letting the pointer move would
-    // make window dragging/resizing start at the eventual lockout point.
-    // Hold only the serialized single-finger contact at the first pressed
-    // coordinate; on the first HARD_TAP frame publish Button Down there,
-    // then pass subsequent positions through normally. Never modify the
-    // core frame/contact pool, multi-finger gestures, or the live monitor.
-    // StateLock covers this state and PTPCore's arbitration state.
+    // Force Touch delays Button Down until click arbitration resolves.
+    // Keep the cursor at the original press point while classification is
+    // pending; after HARD_TAP, translate the entire remainder of this touch
+    // by the same offset. Releasing the offset on the second drag frame
+    // caused an abrupt jump of the dragged window.
+    // Only affect a single continuing contact, never the core/live data.
+    // Protected by StateLock.
     {
         const BOOLEAN forceActionActive =
             (pCtx->SupportsForceTouch &&
@@ -366,30 +365,57 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
             Report.ContactCount == 1 &&
             Report.Contacts[0].TipSwitch != 0;
 
-        if (!buttonSnapshot || !forceActionActive || !singleActiveContact) {
+        if (!forceActionActive || !singleActiveContact ||
+            (pCtx->ForceTouchDragOriginValid &&
+             pCtx->ForceTouchDragContactId != Report.Contacts[0].ContactID)) {
             pCtx->ForceTouchDragOriginValid = FALSE;
-        } else if (!pCtx->ForceTouchDragOriginValid ||
-                   pCtx->ForceTouchDragContactId != Report.Contacts[0].ContactID) {
-            pCtx->ForceTouchDragOriginValid = TRUE;
-            pCtx->ForceTouchDragContactId = Report.Contacts[0].ContactID;
-            pCtx->ForceTouchDragOriginX = Report.Contacts[0].X;
-            pCtx->ForceTouchDragOriginY = Report.Contacts[0].Y;
+            pCtx->ForceTouchDragTranslated = FALSE;
         }
 
-        if (pCtx->ForceTouchDragOriginValid && singleActiveContact &&
-            pCtx->ForceTouchDragContactId == Report.Contacts[0].ContactID) {
-            if (pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING ||
-                pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH) {
-                Report.Contacts[0].X = pCtx->ForceTouchDragOriginX;
-                Report.Contacts[0].Y = pCtx->ForceTouchDragOriginY;
-            } else if (pCtx->ClickArbitrationState == CLICK_ARBITRATION_HARD_TAP) {
-                // The first Button Down must carry the origin, not the
-                // position that finally tripped drag lockout.
-                Report.Contacts[0].X = pCtx->ForceTouchDragOriginX;
-                Report.Contacts[0].Y = pCtx->ForceTouchDragOriginY;
-                pCtx->ForceTouchDragOriginValid = FALSE;
-            } else {
-                pCtx->ForceTouchDragOriginValid = FALSE;
+        if (forceActionActive && singleActiveContact) {
+            if (!pCtx->ForceTouchDragOriginValid && buttonSnapshot) {
+                pCtx->ForceTouchDragOriginValid = TRUE;
+                pCtx->ForceTouchDragTranslated = FALSE;
+                pCtx->ForceTouchDragContactId = Report.Contacts[0].ContactID;
+                pCtx->ForceTouchDragOriginX = Report.Contacts[0].X;
+                pCtx->ForceTouchDragOriginY = Report.Contacts[0].Y;
+            }
+
+            if (pCtx->ForceTouchDragOriginValid &&
+                pCtx->ForceTouchDragContactId == Report.Contacts[0].ContactID) {
+                if (!pCtx->ForceTouchDragTranslated && buttonSnapshot &&
+                    (pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING ||
+                     pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH)) {
+                    Report.Contacts[0].X = pCtx->ForceTouchDragOriginX;
+                    Report.Contacts[0].Y = pCtx->ForceTouchDragOriginY;
+                } else if (!pCtx->ForceTouchDragTranslated && buttonSnapshot &&
+                           pCtx->ClickArbitrationState == CLICK_ARBITRATION_HARD_TAP) {
+                    // Record the physical coordinate on the first Button Down.
+                    // It is the reference for all subsequent relative motion.
+                    pCtx->ForceTouchDragStartX = Report.Contacts[0].X;
+                    pCtx->ForceTouchDragStartY = Report.Contacts[0].Y;
+                    pCtx->ForceTouchDragTranslated = TRUE;
+                }
+
+                if (pCtx->ForceTouchDragTranslated) {
+                    // Signed arithmetic avoids USHORT underflow when the
+                    // finger moves back past the original lockout point.
+                    LONG translatedX = (LONG)pCtx->ForceTouchDragOriginX +
+                        (LONG)Report.Contacts[0].X - (LONG)pCtx->ForceTouchDragStartX;
+                    LONG translatedY = (LONG)pCtx->ForceTouchDragOriginY +
+                        (LONG)Report.Contacts[0].Y - (LONG)pCtx->ForceTouchDragStartY;
+                    // Match the HID logical coordinate range. Keep the
+                    // translated position stable even after button release,
+                    // until this contact lifts, avoiding a release-time jump.
+                    LONG maximumX = (LONG)pCtx->DeviceInfo->x.max - (LONG)pCtx->DeviceInfo->x.min;
+                    LONG maximumY = (LONG)pCtx->DeviceInfo->y.max - (LONG)pCtx->DeviceInfo->y.min;
+                    if (translatedX < 0) translatedX = 0;
+                    if (translatedY < 0) translatedY = 0;
+                    if (translatedX > maximumX) translatedX = maximumX;
+                    if (translatedY > maximumY) translatedY = maximumY;
+                    Report.Contacts[0].X = (USHORT)translatedX;
+                    Report.Contacts[0].Y = (USHORT)translatedY;
+                }
             }
         }
     }
