@@ -158,8 +158,11 @@ typedef struct _DEVICE_CONTEXT
     // Latest digitizer report when no HID READ is queued. Coalesced to
     // prevent USB processing from depending on HIDClass read timing.
     // Protected by StateLock; reset at every D0Entry.
-    PTP_REPORT      PendingTouchReport;
-    BOOLEAN         PendingTouchReportValid;
+    // Bounded ordered backlog. Consecutive motion-only frames can coalesce,
+    // but a button/contact transition must not be replaced by a later frame.
+#define PTP_PENDING_REPORT_CAPACITY 32
+    PTP_REPORT      PendingTouchReports[PTP_PENDING_REPORT_CAPACITY];
+    ULONG           PendingTouchReportCount;
 
     // NOTE: the GUI's config control device is intentionally NOT a field
     // here. It is driver-lifetime state (DRIVER_CONTEXT::ConfigControlDevice

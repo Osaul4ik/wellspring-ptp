@@ -347,44 +347,51 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         &coreFrame,
         &Report);
 
-    // Hardware Force Touch: do not move the HID contact while arbitration
-    // is unresolved. Once HARD_TAP is certain, begin with ButtonDown at
-    // the frozen coordinate; subsequent movement is relative to that frame.
-    // Never rewrite multi-contact gestures or synthesize contact identities.
+    // Keep the original contact anchor across brief secondary contacts.
+    // Only the tracked contact is transformed; other contacts are untouched.
+    // The physical release clears the gesture after the last report is built.
     if (pCtx->SupportsForceTouch &&
         pCtx->PointerConfig.ForceTouchEnabled &&
-        pCtx->PointerConfig.ForceTouchActionEnabled &&
-        Report.ContactCount == 1 &&
-        Report.Contacts[0].TipSwitch &&
-        (buttonSnapshot || pCtx->ForceMotionHeld)) {
-        PTP_CONTACT* contact = &Report.Contacts[0];
-        if (buttonSnapshot && (!pCtx->ForceMotionHeld ||
-            pCtx->ForceMotionContactId != contact->ContactID)) {
+        pCtx->PointerConfig.ForceTouchActionEnabled) {
+        PTP_CONTACT* tracked = NULL;
+        ULONG i;
+        if (pCtx->ForceMotionHeld) {
+            for (i = 0; i < Report.ContactCount; ++i) {
+                if (Report.Contacts[i].ContactID == pCtx->ForceMotionContactId) {
+                    tracked = &Report.Contacts[i];
+                    break;
+                }
+            }
+        } else if (buttonSnapshot && Report.ContactCount == 1 &&
+                   Report.Contacts[0].TipSwitch) {
+            tracked = &Report.Contacts[0];
             pCtx->ForceMotionHeld = TRUE;
             pCtx->ForceMotionDragging = FALSE;
-            pCtx->ForceMotionContactId = contact->ContactID;
-            pCtx->ForceMotionX = contact->X;
-            pCtx->ForceMotionY = contact->Y;
+            pCtx->ForceMotionContactId = tracked->ContactID;
+            pCtx->ForceMotionX = tracked->X;
+            pCtx->ForceMotionY = tracked->Y;
         }
-        if (pCtx->ForceMotionHeld &&
-            !pCtx->ForceMotionDragging && buttonClickReport) {
-            pCtx->ForceMotionDragging = TRUE;
-            pCtx->ForceMotionResumeX = contact->X;
-            pCtx->ForceMotionResumeY = contact->Y;
+        if (tracked != NULL && pCtx->ForceMotionHeld) {
+            if (!pCtx->ForceMotionDragging && buttonClickReport) {
+                pCtx->ForceMotionDragging = TRUE;
+                pCtx->ForceMotionResumeX = tracked->X;
+                pCtx->ForceMotionResumeY = tracked->Y;
+            }
+            if (!pCtx->ForceMotionDragging) {
+                tracked->X = pCtx->ForceMotionX;
+                tracked->Y = pCtx->ForceMotionY;
+            } else {
+                LONG x = (LONG)pCtx->ForceMotionX +
+                    (LONG)tracked->X - (LONG)pCtx->ForceMotionResumeX;
+                LONG y = (LONG)pCtx->ForceMotionY +
+                    (LONG)tracked->Y - (LONG)pCtx->ForceMotionResumeY;
+                tracked->X = (USHORT)((x < 0) ? 0 : (x > 65535 ? 65535 : x));
+                tracked->Y = (USHORT)((y < 0) ? 0 : (y > 65535 ? 65535 : y));
+            }
         }
-        if (!pCtx->ForceMotionHeld ||
-            pCtx->ForceMotionContactId != contact->ContactID) {
+        if (!buttonSnapshot) {
             pCtx->ForceMotionHeld = FALSE;
-        } else if (!pCtx->ForceMotionDragging) {
-            contact->X = pCtx->ForceMotionX;
-            contact->Y = pCtx->ForceMotionY;
-        } else {
-            LONG x = (LONG)pCtx->ForceMotionX +
-                (LONG)contact->X - (LONG)pCtx->ForceMotionResumeX;
-            LONG y = (LONG)pCtx->ForceMotionY +
-                (LONG)contact->Y - (LONG)pCtx->ForceMotionResumeY;
-            contact->X = (USHORT)((x < 0) ? 0 : (x > 65535 ? 65535 : x));
-            contact->Y = (USHORT)((y < 0) ? 0 : (y > 65535 ? 65535 : y));
+            pCtx->ForceMotionDragging = FALSE;
         }
     } else {
         pCtx->ForceMotionHeld = FALSE;
@@ -418,11 +425,40 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         forceTouchClick ||
         (pCtx->ForceTouchDeliveryState != FORCE_TOUCH_DELIVERY_IDLE);
 
-    // Keep the newest touch report until HIDClass supplies a read. This
-    // deliberately coalesces positions rather than blocking the USB reader.
-    // StateLock also serializes this slot with QueueReady callbacks.
-    pCtx->PendingTouchReport = Report;
-    pCtx->PendingTouchReportValid = TRUE;
+    // Preserve button/contact transitions instead of overwriting them
+    // with the next USB frame while HIDClass has no pending READ.
+    // Coalesce only identical contact topology + button state.
+    if (pCtx->PendingTouchReportCount > 0) {
+        PTP_REPORT* last = &pCtx->PendingTouchReports[pCtx->PendingTouchReportCount - 1];
+        BOOLEAN compatible = (last->IsButtonClicked == Report.IsButtonClicked &&
+                              last->ContactCount == Report.ContactCount);
+        ULONG ci;
+        if (compatible) {
+            for (ci = 0; ci < Report.ContactCount; ++ci) {
+                if (last->Contacts[ci].ContactID != Report.Contacts[ci].ContactID ||
+                    last->Contacts[ci].TipSwitch != Report.Contacts[ci].TipSwitch) {
+                    compatible = FALSE;
+                    break;
+                }
+            }
+        }
+        if (compatible) {
+            *last = Report;
+        } else if (pCtx->PendingTouchReportCount < PTP_PENDING_REPORT_CAPACITY) {
+            pCtx->PendingTouchReports[pCtx->PendingTouchReportCount++] = Report;
+        } else {
+            // Keep a bounded queue under sustained reader starvation.
+            // This is an emergency fallback; a prolonged HID stall may
+            // still lose historical transitions, but cannot grow memory.
+            RtlMoveMemory(&pCtx->PendingTouchReports[0],
+                &pCtx->PendingTouchReports[1],
+                (PTP_PENDING_REPORT_CAPACITY - 1) * sizeof(PTP_REPORT));
+            pCtx->PendingTouchReports[PTP_PENDING_REPORT_CAPACITY - 1] = Report;
+        }
+    } else {
+        pCtx->PendingTouchReports[0] = Report;
+        pCtx->PendingTouchReportCount = 1;
+    }
 
     WdfSpinLockRelease(pCtx->StateLock);
 
@@ -613,7 +649,7 @@ AmtPtpTryDeliverPendingTouchReport(_In_ PDEVICE_CONTEXT pCtx)
     NTSTATUS status;
 
     WdfSpinLockAcquire(pCtx->StateLock);
-    if (!pCtx->PendingTouchReportValid) {
+    if (pCtx->PendingTouchReportCount == 0) {
         WdfSpinLockRelease(pCtx->StateLock);
         return;
     }
@@ -627,10 +663,15 @@ AmtPtpTryDeliverPendingTouchReport(_In_ PDEVICE_CONTEXT pCtx)
     status = WdfRequestRetrieveOutputMemory(request, &memory);
     if (NT_SUCCESS(status)) {
         status = WdfMemoryCopyFromBuffer(
-            memory, 0, &pCtx->PendingTouchReport, sizeof(PTP_REPORT));
+            memory, 0, &pCtx->PendingTouchReports[0], sizeof(PTP_REPORT));
         if (NT_SUCCESS(status)) {
             WdfRequestSetInformation(request, sizeof(PTP_REPORT));
-            pCtx->PendingTouchReportValid = FALSE;
+            pCtx->PendingTouchReportCount--;
+            if (pCtx->PendingTouchReportCount != 0) {
+                RtlMoveMemory(&pCtx->PendingTouchReports[0],
+                    &pCtx->PendingTouchReports[1],
+                    pCtx->PendingTouchReportCount * sizeof(PTP_REPORT));
+            }
         }
     }
     WdfSpinLockRelease(pCtx->StateLock);
@@ -777,7 +818,11 @@ AmtPtpEvtInputQueueReady(
 
     UNREFERENCED_PARAMETER(Queue);
 
-    AmtPtpTryDeliverPendingTouchReport(pCtx);
+    // One callback may cover multiple queued reads; drain in order.
+    // Subsequent attempts exit immediately on empty queue.
+    for (ULONG i = 0; i < PTP_PENDING_REPORT_CAPACITY; ++i) {
+        AmtPtpTryDeliverPendingTouchReport(pCtx);
+    }
     AmtPtpTryDeliverForceTouchClick(pCtx);
 }
 

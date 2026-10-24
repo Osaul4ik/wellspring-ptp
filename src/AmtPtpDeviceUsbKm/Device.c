@@ -1692,7 +1692,7 @@ AmtPtpEvtDeviceD0Entry(
 
     // Reset per-session timing and contact state on D0 entry.
     pDeviceContext->ScanTimeAccumulator = 0;
-    pDeviceContext->PendingTouchReportValid = FALSE;
+    pDeviceContext->PendingTouchReportCount = 0;
     pDeviceContext->NextContactId        = 0;
     pDeviceContext->OverflowCount        = 0;
     pDeviceContext->PrevButtonClicked    = FALSE;
