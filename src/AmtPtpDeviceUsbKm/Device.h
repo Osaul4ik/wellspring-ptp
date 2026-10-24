@@ -277,6 +277,7 @@ typedef struct _DEVICE_CONTEXT
     // Single-contact HID coordinates withheld during hardware Force Touch.
     BOOLEAN                 ForceMotionHeld;
     BOOLEAN                 ForceMotionDragging;
+    BOOLEAN                 ForceMotionWasPressed;
     ULONG                   ForceMotionContactId;
     USHORT                  ForceMotionX;
     USHORT                  ForceMotionY;

@@ -347,17 +347,30 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         &coreFrame,
         &Report);
 
-    // Keep the original contact anchor across brief secondary contacts.
-    // Only the tracked contact is transformed; other contacts are untouched.
-    // The physical release clears the gesture after the last report is built.
+    // Freeze only while arbitrating a physical force press. When the
+    // physical button is released without lifting the finger, preserve the
+    // anchor with a translated motion baseline. Clearing the latch here
+    // would snap the contact back to the sensor coordinate; continuing to
+    // freeze it would make the cursor appear stuck until finger lift.
     if (pCtx->SupportsForceTouch &&
         pCtx->PointerConfig.ForceTouchEnabled &&
         pCtx->PointerConfig.ForceTouchActionEnabled) {
         PTP_CONTACT* tracked = NULL;
         ULONG i;
+        BOOLEAN newPress = buttonSnapshot && !pCtx->ForceMotionWasPressed;
+        pCtx->ForceMotionWasPressed = buttonSnapshot;
+
+        if (newPress) {
+            // A new physical press (possibly without finger lift) must
+            // arbitrate from its own position rather than reusing a prior
+            // gesture's frozen anchor.
+            pCtx->ForceMotionHeld = FALSE;
+            pCtx->ForceMotionDragging = FALSE;
+        }
         if (pCtx->ForceMotionHeld) {
             for (i = 0; i < Report.ContactCount; ++i) {
-                if (Report.Contacts[i].ContactID == pCtx->ForceMotionContactId) {
+                if (Report.Contacts[i].ContactID == pCtx->ForceMotionContactId &&
+                    Report.Contacts[i].TipSwitch) {
                     tracked = &Report.Contacts[i];
                     break;
                 }
@@ -371,8 +384,12 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
             pCtx->ForceMotionX = tracked->X;
             pCtx->ForceMotionY = tracked->Y;
         }
+
         if (tracked != NULL && pCtx->ForceMotionHeld) {
-            if (!pCtx->ForceMotionDragging && buttonClickReport) {
+            if (!pCtx->ForceMotionDragging &&
+                (buttonClickReport || !buttonSnapshot)) {
+                // HARD_TAP or physical release: keep the currently visible
+                // point, but allow movement from this sensor position on.
                 pCtx->ForceMotionDragging = TRUE;
                 pCtx->ForceMotionResumeX = tracked->X;
                 pCtx->ForceMotionResumeY = tracked->Y;
@@ -388,12 +405,13 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
                 tracked->X = (USHORT)((x < 0) ? 0 : (x > 65535 ? 65535 : x));
                 tracked->Y = (USHORT)((y < 0) ? 0 : (y > 65535 ? 65535 : y));
             }
-        }
-        if (!buttonSnapshot) {
+        } else if (!buttonSnapshot &&
+                   (Report.ContactCount == 0 || !pCtx->ForceMotionHeld)) {
             pCtx->ForceMotionHeld = FALSE;
             pCtx->ForceMotionDragging = FALSE;
         }
     } else {
+        pCtx->ForceMotionWasPressed = FALSE;
         pCtx->ForceMotionHeld = FALSE;
         pCtx->ForceMotionDragging = FALSE;
     }
