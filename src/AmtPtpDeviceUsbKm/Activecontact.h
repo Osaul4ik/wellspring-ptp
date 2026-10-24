@@ -107,6 +107,13 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
 
     // Keeps the retap seed from being overwritten on the first sample.
     BOOLEAN RetapSeeded;
+    // TRUE once this identity has been reported to Windows with Confidence=0
+    // (frozen under a palm / in the edge dead zone). Windows treats such a
+    // contact as a palm for its whole lifetime, so it must be retired (UP)
+    // and re-born under a new ContactID once it is a finger again. Cleared
+    // on birth and rebind. Placed here to fill existing padding: the struct
+    // is exactly 64 bytes (see C_ASSERT below).
+    BOOLEAN PalmFrozen;
 
     // Fractional remainder (Q32, always in [0, 2^32)) of the scaled delta
     // that has not yet been emitted, carried across frames so scaling
@@ -148,13 +155,6 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
     // this. Cleared on birth and on identity rebind.
     BOOLEAN Announced;
 
-    // TRUE once this identity has been reported to Windows with Confidence=0
-    // (frozen under a palm / in the edge dead zone). Windows treats a
-    // contact that was ever reported unconfident as a palm for the rest of
-    // its lifetime and ignores it even if Confidence=1 follows, so such an
-    // identity must be retired (UP) and re-born under a new ContactID once
-    // it qualifies as a finger again. Cleared on birth and on rebind.
-    BOOLEAN PalmFrozen;
 } ACTIVE_CONTACT, *PACTIVE_CONTACT;
 
 // Keep each pool element exactly one 64-byte cache line.
