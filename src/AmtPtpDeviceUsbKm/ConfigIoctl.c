@@ -202,6 +202,8 @@ AmtPointerConfigClamp(_Inout_ PAMT_POINTER_CONFIG Config)
     Config->RequirePressureToActivate = Config->RequirePressureToActivate ? 1u : 0u;
     Config->RequirePressureContinuously = Config->RequirePressureContinuously ? 1u : 0u;
     Config->ForceTouchActionEnabled = Config->ForceTouchActionEnabled ? 1u : 0u;
+    Config->ForceTouchHardTapHoldMs = AmtClampToStepGrid(Config->ForceTouchHardTapHoldMs,
+        AMT_POINTER_HARD_TAP_HOLD_MIN, AMT_POINTER_HARD_TAP_HOLD_MAX, AMT_POINTER_HARD_TAP_HOLD_STEP);
     // Small-contact gates: two INDEPENDENT on/off flags (birth-only vs
     // continuous) - neither is forced off by the other being off. Each has
     // its own Major ("M") threshold, clamped to the same shared range.
@@ -370,6 +372,7 @@ static const AMT_REG_FIELD g_PointerRegFields[] = {
     AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationEnabled, AMT_REG_VALUE_FORCETOUCH_EMULATION_ENABLED),
     AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationAction, AMT_REG_VALUE_FORCETOUCH_EMULATION_ACTION),
     AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationHoldMs, AMT_REG_VALUE_FORCETOUCH_EMULATION_HOLD_MS),
+    AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchHardTapHoldMs, L"ForceTouchHardTapHoldMs"),
     AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTapDragLockoutDistance, AMT_REG_VALUE_FORCE_TAP_DRAG_LOCKOUT_DISTANCE),
     AMT_REG_FIELD_ENTRY(AMT_POINTER_CONFIG, ForceTouchEmulationDragLockoutDistance, AMT_REG_VALUE_FORCETOUCH_EMULATION_DRAG_LOCKOUT_DISTANCE),
 };

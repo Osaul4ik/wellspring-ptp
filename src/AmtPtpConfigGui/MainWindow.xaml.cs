@@ -798,6 +798,8 @@ namespace AmtPtpConfigGui
                 // the "Enable Force Touch" master; older configs keep it on.
                 if (cfg.StructVersion < 12)
                     cfg.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
+                if (cfg.StructVersion < 13)
+                    cfg.ForceTouchHardTapHoldMs = defaults.ForceTouchHardTapHoldMs;
             }
 
             return cfg.Clamped();
@@ -2359,6 +2361,7 @@ namespace AmtPtpConfigGui
                 cfg = cfg.Clamped();
                 SlForceTapThreshold.Value = cfg.ForceTapThreshold;
                 SlForceTapDragLockoutDistance.Value = cfg.ForceTapDragLockoutDistance;
+                SlForceTouchHardTapHoldMs.Value = cfg.ForceTouchHardTapHoldMs;
                 ChkForceTouchEnabled.IsChecked = cfg.ForceTouchEnabled != 0;
                 ChkRequirePressure.IsChecked = cfg.RequirePressureToActivate != 0;
                 ChkRequirePressureContinuously.IsChecked = cfg.RequirePressureContinuously != 0;
@@ -2430,6 +2433,7 @@ namespace AmtPtpConfigGui
             var c = PointerConfig.Default;
             c.ForceTapThreshold = (uint)SlForceTapThreshold.Value;
             c.ForceTapDragLockoutDistance = (uint)SlForceTapDragLockoutDistance.Value;
+            c.ForceTouchHardTapHoldMs = (uint)SlForceTouchHardTapHoldMs.Value;
             c.ForceTouchEnabled = ChkForceTouchEnabled.IsChecked == true ? 1u : 0u;
             c.RequirePressureToActivate = ChkRequirePressure.IsChecked == true ? 1u : 0u;
             c.RequirePressureContinuously =
@@ -2471,6 +2475,7 @@ namespace AmtPtpConfigGui
             if (LblForceTapThreshold == null) return;
             LblForceTapThreshold.Text = $"{SlForceTapThreshold.Value:0}";
             LblForceTapDragLockoutDistance.Text = $"{SlForceTapDragLockoutDistance.Value:0}";
+            LblForceTouchHardTapHoldMs.Text = $"{SlForceTouchHardTapHoldMs.Value / 1000.0:0.00} s";
             LblCursorSmoothing.Text = $"{SlCursorSmoothing.Value:0}%";
             LblCursorSpeed.Text = $"{SlCursorSpeed.Value:0}%";
             LblCursorDeadzone.Text = $"{SlCursorDeadzone.Value:0}";
@@ -2519,6 +2524,7 @@ namespace AmtPtpConfigGui
                 ChkRequirePressureContinuously == null ||
                 SlForceTapThreshold == null ||
                 SlForceTapDragLockoutDistance == null ||
+                SlForceTouchHardTapHoldMs == null ||
                 ForceTapActionPanel == null ||
                 LblForceTapAction == null)
                 return;
@@ -2532,6 +2538,7 @@ namespace AmtPtpConfigGui
 
             SlForceTapThreshold.IsEnabled = action;
             SlForceTapDragLockoutDistance.IsEnabled = action;
+            SlForceTouchHardTapHoldMs.IsEnabled = action;
             ForceTapActionPanel.IsEnabled = action;
             LblForceTapAction.IsEnabled = action;
         }

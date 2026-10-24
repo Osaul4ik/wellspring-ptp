@@ -223,6 +223,9 @@ namespace AmtPtpConfigGui
                         old.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
                     }
 
+                    if (p.Pointer.StructVersion < 13)
+                        old.ForceTouchHardTapHoldMs = defaults.ForceTouchHardTapHoldMs;
+
                     if (p.Pointer.StructVersion < 3)
                     {
                         old.CursorDeadzoneSlow = defaults.CursorDeadzoneSlow;

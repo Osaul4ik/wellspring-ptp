@@ -271,6 +271,14 @@ typedef struct _DEVICE_CONTEXT
     // Frames PeakPressure has NOT grown; lets a flat/light press resolve
     // to HARD_TAP before the full safety-net timeout.
     UCHAR                   ClickArbitrationStallFrames;
+    // Single-contact HID coordinates withheld during hardware Force Touch.
+    BOOLEAN                 ForceMotionHeld;
+    BOOLEAN                 ForceMotionDragging;
+    ULONG                   ForceMotionContactId;
+    USHORT                  ForceMotionX;
+    USHORT                  ForceMotionY;
+    USHORT                  ForceMotionResumeX;
+    USHORT                  ForceMotionResumeY;
 
     // Scan time
     LARGE_INTEGER LastReportTime;

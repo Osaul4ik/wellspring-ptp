@@ -170,9 +170,14 @@ typedef struct _AMT_POINTER_CONFIG
     // Force Tap action being emitted. Has no effect when ForceTouchEnabled
     // is 0. Default 1 (the behaviour before this flag existed).
     ULONG ForceTouchActionEnabled;
+    ULONG ForceTouchHardTapHoldMs; // 1300 ms default, hardware only
 } AMT_POINTER_CONFIG, *PAMT_POINTER_CONFIG;
 
-#define AMT_POINTER_CONFIG_VERSION 12
+#define AMT_POINTER_CONFIG_VERSION 13
+
+#define AMT_POINTER_HARD_TAP_HOLD_MIN  300
+#define AMT_POINTER_HARD_TAP_HOLD_MAX  3000
+#define AMT_POINTER_HARD_TAP_HOLD_STEP 50
 
 #define AMT_POINTER_SMOOTH_MIN       0
 #define AMT_POINTER_SMOOTH_MAX       100
@@ -238,7 +243,8 @@ typedef struct _AMT_POINTER_CONFIG
     300,                                                                    \
     130,                                                                    \
     110,                                                                    \
-    /* ForceTouchActionEnabled                 */ 1                        \
+    /* ForceTouchActionEnabled                 */ 1,                       \
+    /* ForceTouchHardTapHoldMs                 */ 1300                     \
 }
 
 // Sane clamp range - raw pressure realistically spans ~0-300, so keep the

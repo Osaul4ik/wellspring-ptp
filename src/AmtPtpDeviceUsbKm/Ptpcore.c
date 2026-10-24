@@ -1132,6 +1132,19 @@ PTPCore_ProcessFrame(
             pCtx->ClickArbitrationStallFrames   = 0;
         }
 
+        // Holding a confirmed hardware Force Touch past the configurable
+        // limit converts it to a normal held button. The start timestamp
+        // is captured on the physical button-down edge (IDLE -> PENDING).
+        if (forceTouchHardwareActive &&
+            pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH &&
+            pCtx->PerfFrequency.QuadPart > 0 &&
+            NowQpc >= pCtx->ClickArbitrationStartQpc &&
+            (NowQpc - pCtx->ClickArbitrationStartQpc) >=
+                ((LONGLONG)pCtx->PointerConfig.ForceTouchHardTapHoldMs *
+                 pCtx->PerfFrequency.QuadPart) / 1000) {
+            pCtx->ClickArbitrationState = CLICK_ARBITRATION_HARD_TAP;
+        }
+
         if (pCtx->ForceTouchDragLockout) {
             // Movement past the lockout always wins, this frame or any later
             // one - including retroactively cancelling a FORCE_TOUCH already

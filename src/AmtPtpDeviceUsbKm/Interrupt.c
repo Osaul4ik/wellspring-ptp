@@ -347,6 +347,50 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         &coreFrame,
         &Report);
 
+    // Hardware Force Touch: do not move the HID contact while arbitration
+    // is unresolved. Once HARD_TAP is certain, begin with ButtonDown at
+    // the frozen coordinate; subsequent movement is relative to that frame.
+    // Never rewrite multi-contact gestures or synthesize contact identities.
+    if (pCtx->SupportsForceTouch &&
+        pCtx->PointerConfig.ForceTouchEnabled &&
+        pCtx->PointerConfig.ForceTouchActionEnabled &&
+        Report.ContactCount == 1 &&
+        Report.Contacts[0].TipSwitch &&
+        (buttonSnapshot || pCtx->ForceMotionHeld)) {
+        PTP_CONTACT* contact = &Report.Contacts[0];
+        if (buttonSnapshot && (!pCtx->ForceMotionHeld ||
+            pCtx->ForceMotionContactId != contact->ContactID)) {
+            pCtx->ForceMotionHeld = TRUE;
+            pCtx->ForceMotionDragging = FALSE;
+            pCtx->ForceMotionContactId = contact->ContactID;
+            pCtx->ForceMotionX = contact->X;
+            pCtx->ForceMotionY = contact->Y;
+        }
+        if (pCtx->ForceMotionHeld &&
+            !pCtx->ForceMotionDragging && buttonClickReport) {
+            pCtx->ForceMotionDragging = TRUE;
+            pCtx->ForceMotionResumeX = contact->X;
+            pCtx->ForceMotionResumeY = contact->Y;
+        }
+        if (!pCtx->ForceMotionHeld ||
+            pCtx->ForceMotionContactId != contact->ContactID) {
+            pCtx->ForceMotionHeld = FALSE;
+        } else if (!pCtx->ForceMotionDragging) {
+            contact->X = pCtx->ForceMotionX;
+            contact->Y = pCtx->ForceMotionY;
+        } else {
+            LONG x = (LONG)pCtx->ForceMotionX +
+                (LONG)contact->X - (LONG)pCtx->ForceMotionResumeX;
+            LONG y = (LONG)pCtx->ForceMotionY +
+                (LONG)contact->Y - (LONG)pCtx->ForceMotionResumeY;
+            contact->X = (USHORT)((x < 0) ? 0 : (x > 65535 ? 65535 : x));
+            contact->Y = (USHORT)((y < 0) ? 0 : (y > 65535 ? 65535 : y));
+        }
+    } else {
+        pCtx->ForceMotionHeld = FALSE;
+        pCtx->ForceMotionDragging = FALSE;
+    }
+
     // Arbitrated by PTPCore, not the raw button bit.
     if (buttonClickReport) {
         Report.IsButtonClicked = TRUE;

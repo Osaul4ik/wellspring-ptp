@@ -1714,6 +1714,8 @@ AmtPtpEvtDeviceD0Entry(
     pDeviceContext->ForceTouchDeliveryState     = FORCE_TOUCH_DELIVERY_IDLE;
     pDeviceContext->PendingForceTouchClickCount = 0;
     pDeviceContext->ClickArbitrationState = CLICK_ARBITRATION_IDLE;
+    pDeviceContext->ForceMotionHeld = FALSE;
+    pDeviceContext->ForceMotionDragging = FALSE;
     AmtContactPoolInit(pDeviceContext->ActiveContacts);
 
     // Zero RecentLifts on D0Entry to prevent stale retap-smoothing
