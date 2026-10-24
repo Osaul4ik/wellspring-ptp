@@ -1452,11 +1452,6 @@
                                         <TextBlock x:Name="LblForceTapDragLockoutDistance" Grid.Column="1" Style="{StaticResource SliderValue}"/>
                                     </Grid>
                                     <Slider x:Name="SlForceTapDragLockoutDistance" Minimum="40" Maximum="400" SmallChange="10" LargeChange="10" IsSnapToTickEnabled="True" TickFrequency="10" ValueChanged="PointerSlider_Changed"/>
-                                    <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Hard Tap hold time" ToolTip="After a hardware Force Touch is held this long, convert it to a normal held click. Movement is blocked until Hard Tap is confirmed."/>
-                                        <TextBlock x:Name="LblForceTouchHardTapHoldMs" Grid.Column="1" Style="{StaticResource SliderValue}"/>
-                                    </Grid>
-                                    <Slider x:Name="SlForceTouchHardTapHoldMs" Minimum="300" Maximum="3000" SmallChange="50" LargeChange="50" IsSnapToTickEnabled="True" TickFrequency="50" ValueChanged="PointerSlider_Changed"/>
                                     <CheckBox x:Name="ChkForceTouchEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,10,0,4" Content="Enable Force Touch" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="Master switch for Force Touch on trackpads that support it. When on, the three options below become available and each can be turned on or off independently. When off, none of them has any effect. On standard trackpads the driver ignores this setting."/>
                                     <CheckBox x:Name="ChkForceTouchAction" Style="{StaticResource OptionCheckBox}" Margin="18,4,0,4" Content="Force Touch action" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="A hard press (Force Touch) triggers the Force Tap action chosen below. Turn this off to keep the pressure options below working without any Force Tap action being sent."/>
                                     <CheckBox x:Name="ChkRequirePressure" Style="{StaticResource OptionCheckBox}" Margin="18,4,0,4" Content="Require pressure to activate contact" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="For Force Touch-capable trackpads, a brand-new contact with zero pressure is ignored until pressure becomes positive. Existing contacts are unaffected."/>
@@ -1527,6 +1522,18 @@
                                     </Grid>
                                     <Slider x:Name="SlForceTouchEmulationDragLockoutDistance" Minimum="40" Maximum="400" SmallChange="10" LargeChange="10" IsSnapToTickEnabled="True" TickFrequency="10" ValueChanged="PointerSlider_Changed"/>
                                     <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="Available only on trackpads without hardware Force Touch (no pressure sensor). This does not change or interfere with real Force Touch hardware."/>
+                                </StackPanel>
+                            </GroupBox>
+
+                            <!-- Shared hard-tap timer for hardware and emulated Force Touch. -->
+                            <GroupBox x:Name="HardTapTimingGroup" Margin="0,12,0,0">
+                                <GroupBox.Header><TextBlock Text="Hard Tap timing" Style="{StaticResource SectionTitle}"/></GroupBox.Header>
+                                <StackPanel>
+                                    <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Hard Tap hold time" ToolTip="For hardware Force Touch, convert to a normal held click after this time, measured from physical button down. With emulation, Hard Tap can win before emulation fires; after emulation fires, this timer cannot create a second click."/>
+                                        <TextBlock x:Name="LblForceTouchHardTapHoldMs" Grid.Column="1" Style="{StaticResource SliderValue}"/>
+                                    </Grid>
+                                    <Slider x:Name="SlForceTouchHardTapHoldMs" Minimum="300" Maximum="3000" SmallChange="50" LargeChange="50" IsSnapToTickEnabled="True" TickFrequency="50" ValueChanged="PointerSlider_Changed"/>
                                 </StackPanel>
                             </GroupBox>
 

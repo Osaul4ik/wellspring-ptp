@@ -2538,7 +2538,9 @@ namespace AmtPtpConfigGui
 
             SlForceTapThreshold.IsEnabled = action;
             SlForceTapDragLockoutDistance.IsEnabled = action;
-            SlForceTouchHardTapHoldMs.IsEnabled = action;
+            SlForceTouchHardTapHoldMs.IsEnabled = _forceTouchSupported
+                ? action
+                : ChkForceTouchEmulationEnabled?.IsChecked == true;
             ForceTapActionPanel.IsEnabled = action;
             LblForceTapAction.IsEnabled = action;
         }
@@ -2555,6 +2557,8 @@ namespace AmtPtpConfigGui
             ForceTouchEmulationActionPanel.IsEnabled = enabled;
             ForceTouchEmulationHoldRow.IsEnabled = enabled;
             SlForceTouchEmulationHoldMs.IsEnabled = enabled;
+            if (SlForceTouchHardTapHoldMs != null && !_forceTouchSupported)
+                SlForceTouchHardTapHoldMs.IsEnabled = enabled;
         }
 
         private void SmallContactRejectionOption_Changed(object sender, RoutedEventArgs e)

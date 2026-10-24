@@ -1066,7 +1066,9 @@ PTPCore_ProcessFrame(
             } else if (!releasingForceTouch) {
                 INT adx = (bestDx < 0) ? -bestDx : bestDx;
                 INT ady = (bestDy < 0) ? -bestDy : bestDy;
-                if (adx > dragLockoutDistance || ady > dragLockoutDistance) {
+                if ((adx > dragLockoutDistance || ady > dragLockoutDistance) &&
+                    !(forceTouchEmulationActive &&
+                      pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH)) {
                     pCtx->ForceTouchDragLockout = TRUE;
                 }
             }
@@ -1132,11 +1134,12 @@ PTPCore_ProcessFrame(
             pCtx->ClickArbitrationStallFrames   = 0;
         }
 
-        // For hardware and emulation, holding a confirmed Force Touch past
-        // the configurable hard-tap limit converts it to a normal held button.
+        // Hardware only: a confirmed Force Touch can turn into a held click
+        // after the hard-tap limit. Emulation has already fired its action
+        // at the hold threshold and must remain committed until release.
         // The clock starts at the physical press edge (IDLE -> PENDING),
         // NOT when either force-touch mode first becomes active.
-        if ((forceTouchHardwareActive || forceTouchEmulationActive) &&
+        if (forceTouchHardwareActive &&
             pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH &&
             pCtx->PerfFrequency.QuadPart > 0 &&
             NowQpc >= pCtx->ClickArbitrationStartQpc &&
@@ -1146,7 +1149,9 @@ PTPCore_ProcessFrame(
             pCtx->ClickArbitrationState = CLICK_ARBITRATION_HARD_TAP;
         }
 
-        if (pCtx->ForceTouchDragLockout) {
+        if (pCtx->ForceTouchDragLockout &&
+            !(forceTouchEmulationActive &&
+              pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH)) {
             // Movement past the lockout always wins, this frame or any later
             // one - including retroactively cancelling a FORCE_TOUCH already
             // decided earlier this same press.
