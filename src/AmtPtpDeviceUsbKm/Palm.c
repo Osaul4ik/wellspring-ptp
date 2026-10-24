@@ -169,13 +169,11 @@ AmtPalmClassify(
     // is still rejected (PALM_LOCAL/PALM_LARGE) and only finger-sized
     // contacts are let through to join the gesture.
     INT     edgeState        = AMT_EDGE_UNKNOWN;
-    BOOLEAN edgeBirthAllowed = FALSE;   // in-zone birth let through by GestureContext
     if (IsBirth) {
         BOOLEAN inEdgeZone = AmtPalmInEdgeZone(DevInfo, Runtime, NormX, NormY);
         if (inEdgeZone && !GestureContext) {
             return PALM_LOCAL;
         }
-        edgeBirthAllowed = inEdgeZone;
         edgeState = inEdgeZone ? AMT_EDGE_INSIDE : AMT_EDGE_OUTSIDE;
     }
 
@@ -187,7 +185,7 @@ AmtPalmClassify(
     // A large palm that lands in the edge zone must stay a LOCAL reject
     // (as it always was): PALM_LARGE blanks and latches the whole pad,
     // which would kill the very gesture this bypass exists to protect.
-    if (edgeBirthAllowed && cls == PALM_LARGE)
+    if (edgeState == AMT_EDGE_INSIDE && cls == PALM_LARGE)
         return PALM_LOCAL;
 
     return cls;

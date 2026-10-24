@@ -224,11 +224,6 @@ typedef struct _DEVICE_CONTEXT
     // for them - click handling falls back to a plain mechanical hard tap.
     BOOLEAN SupportsForceTouch;
 
-    // PTP state
-    BOOLEAN PtpInputOn;
-    BOOLEAN PtpReportTouch;
-    BOOLEAN PtpReportButton;
-
     // Track the prior button state for click-edge detection.
     BOOLEAN PrevButtonClicked;
 
@@ -472,6 +467,7 @@ typedef struct _DEVICE_CONTEXT
     // every time; now it's a plain field read. 0 means "no usable clock"
     // (PerfFrequency.QuadPart <= 0), preserving the original fail-closed/
     // fail-open behavior of each call site exactly.
+    LONGLONG      VelocityWindowTicks;           // velocity history cap (AMT_VELOCITY_WINDOW_MS)
     LONGLONG      RetapWindowTicks;             // AmtRecentLiftFindNearby window
     LONGLONG      MatchMaxTimeDeltaTicks;       // AmtMatchCorrespond time-reject
     LONGLONG      ClickArbitrationTimeoutTicks; // click arbitration safety-net
@@ -531,7 +527,6 @@ typedef struct _DEVICE_CONTEXT
     // ---------------------------------------------------------------
     WDFUSBINTERFACE        UsbInterface;
     USB_DEVICE_DESCRIPTOR  DeviceDescriptor;
-    ULONG                  UsbDeviceTraits;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 

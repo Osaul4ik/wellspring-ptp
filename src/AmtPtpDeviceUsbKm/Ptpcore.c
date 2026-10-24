@@ -553,8 +553,7 @@ PTPCore_ProcessFrame(
             // deferral delayed the real UP by up to 4 frames (~33ms @ 120Hz),
             // breaking 3-finger swipe completion and 2-finger soft taps.
             // Not recorded in RecentLifts.
-            AmtContactEnterGrace(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
-            AmtContactExpireGrace(pCtx->ActiveContacts, p);
+            AmtContactKill(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
             AmtCoreEmitLift(pCtx, OutResult, announced, oldId, oldX, oldY);
 
         } else {
@@ -612,8 +611,7 @@ PTPCore_ProcessFrame(
         const BOOLEAN announcedOld = pCtx->ActiveContacts[p].Announced;
 
         if (pCtx->ActiveContacts[p].WasInGesture || gestureThisFrame) {
-            AmtContactEnterGrace(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
-            AmtContactExpireGrace(pCtx->ActiveContacts, p);
+            AmtContactKill(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
             // Gesture lift: not recorded in RecentLifts.
         } else {
             USHORT liftX = pCtx->ActiveContacts[p].ReportX;
@@ -805,6 +803,7 @@ PTPCore_ProcessFrame(
                 acPre,
                 candidates.Candidates[pc].X, candidates.Candidates[pc].Y,
                 NowQpc, pCtx->PerfFrequency.QuadPart,
+                pCtx->VelocityWindowTicks,
                 &pCtx->PointerConfig, &pCtx->ScrollConfig,
                 &pCtx->PointerRuntime);
         }
@@ -880,6 +879,7 @@ PTPCore_ProcessFrame(
         AmtContactUpdate(c, cand->X, cand->Y,
                          cand->Major, cand->Minor, cand->Pressure,
                          cand->SlotIndex, NowQpc, pCtx->PerfFrequency.QuadPart,
+                         pCtx->VelocityWindowTicks,
                          (BOOLEAN)(aliveCount == 1), scrollMode,
                          gestureFastFrame, holdMotion,
                          &pCtx->PointerConfig, &pCtx->ScrollConfig,

@@ -7,7 +7,7 @@
 //
 // LOGICAL_MAXIMUM (X/Y) must equal this model's native raw coordinate range
 // - i.e. exactly (x.max - x.min) / (y.max - y.min) from that model's entry
-// in Bcm5974ConfigTable (AppleDefinition.h). AmtInputParseFrame() (Input.c)
+// in Bcm5974ConfigTable (Device.c). AmtInputParseFrame() (Input.c)
 // clamps and offsets every reported contact into [0, x.max-x.min] /
 // [0, y.max-y.min] for that same table entry, so this is the one thing that
 // is NOT a measurement or an estimate - it MUST match Bcm5974ConfigTable

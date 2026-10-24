@@ -28,7 +28,7 @@
 // (traceview/tracelog/.pdb-relative .tmf files).
 //
 // NOT related to the GUI "Live" frame monitor (DEVICE_CONTEXT::LiveEnabled/
-// LiveFrame, IOCTL_AMT_PTP_SET_LIVE_MODE in ConfigIoctl.c). That is a
+// LiveFrame, IOCTL_AMT_PTP_SET_LIVE_ENABLED in ConfigIoctl.c). That is a
 // separate, always-available snapshot feed for AmtPtpConfigGui's live
 // view and has nothing to do with this debug-trace switch - do not
 // conflate the two.
@@ -93,7 +93,7 @@ AmtTraceLoadDebugModeFromRegistry(
     _Inout_ PDEVICE_CONTEXT DeviceContext
 );
 
-// Power-state / IOCTL name helpers - moved here from the previous
+// Power-state name helper - moved here from the previous
 // DebugUtils.c, which defined these but was never added to the project
 // (AmtPtpDeviceUsbKm.vcxproj had no <ClCompile Include="DebugUtils.c" />
 // entry, so the file was not even compiled into the driver, and nothing
@@ -105,9 +105,5 @@ DbgDevicePowerString(
     _In_ WDF_POWER_DEVICE_STATE Type
 );
 
-PCSTR
-DbgIoControlGetString(
-    _In_ ULONG IoControlCode
-);
 
 EXTERN_C_END

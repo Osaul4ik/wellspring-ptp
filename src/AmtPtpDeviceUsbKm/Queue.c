@@ -133,6 +133,17 @@ AmtPtpDeviceUsbKmQueueInitialize(
         return status;
     }
 
+    // A queued read may arrive after the final touch interrupt. Notify the
+    // force-touch delivery state machine so a pending mouse DOWN/UP report
+    // can be delivered without requiring another physical touch.
+    status = WdfIoQueueReadyNotify(
+        pDeviceContext->InputQueue,
+        AmtPtpEvtInputQueueReady,
+        pDeviceContext);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
     // NOTE: a separate manual "MouseInputQueue" for the force-touch mouse
     // top-level collection existed here between the "Fullfix" commit and
     // this revert. It has been removed - the mouse collection's reads are

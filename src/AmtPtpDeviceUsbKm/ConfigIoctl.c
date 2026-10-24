@@ -1009,11 +1009,11 @@ AmtPtpConfigControlEvtIoDeviceControl(
         break;
 
     case IOCTL_AMT_PTP_SET_LIVE_ENABLED:
-        status = AmtPtpSetLiveEnabled(controlDevice, Request);
+        status = AmtPtpSetLiveEnabled(targetDevice, Request);
         break;
 
     case IOCTL_AMT_PTP_GET_LIVE_FRAME:
-        status = AmtPtpGetLiveFrame(controlDevice, Request);
+        status = AmtPtpGetLiveFrame(targetDevice, Request);
         break;
 
     case IOCTL_AMT_PTP_GET_DEVICE_INFO:
@@ -1056,7 +1056,6 @@ AmtPtpSetLiveEnabled(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
     PAMT_CONFIG_CONTROL_FILE_CONTEXT fileContext;
     PDEVICE_CONTEXT targetContext;
-    WDFDEVICE targetDevice;
     WDFFILEOBJECT fileObject;
     PULONG enabled;
     size_t inputLength = 0;
@@ -1067,24 +1066,14 @@ AmtPtpSetLiveEnabled(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
         ? AmtConfigControlFileGetContext(fileObject)
         : NULL;
 
-    // BUG FIX: was two separate unguarded reads of
-    // controlContext->TargetDevice (a NULL-check here, then a dereference
-    // via DeviceGetContext below) - a classic check-then-use TOCTOU on a
-    // field a concurrent sleep/wake re-enumeration can null out between
-    // the two. One locked snapshot closes that window.
-    //
-    // BUG FIX (use-after-free): the snapshot now also holds a reference on
-    // targetDevice (see AmtPtpConfigControlSnapshotTargetDevice) that MUST
-    // be released on every exit path below - hence the single goto-exit
-    // instead of the scattered early returns this function used to have.
-    targetDevice = AmtPtpConfigControlSnapshotTargetDevice(Device);
+    // The dispatcher holds a referenced target device until this call returns.
 
-    if (targetDevice == NULL || fileContext == NULL) {
+    if (Device == NULL || fileContext == NULL) {
         status = STATUS_INVALID_DEVICE_STATE;
         goto exit;
     }
 
-    targetContext = DeviceGetContext(targetDevice);
+    targetContext = DeviceGetContext(Device);
 
     status = WdfRequestRetrieveInputBuffer(
         Request, sizeof(ULONG), (PVOID*)&enabled, &inputLength);
@@ -1126,7 +1115,6 @@ AmtPtpSetLiveEnabled(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
     status = STATUS_SUCCESS;
 
 exit:
-    AmtPtpConfigControlReleaseTargetDevice(targetDevice);
     return status;
 }
 
@@ -1135,7 +1123,6 @@ AmtPtpGetLiveFrame(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 {
     PAMT_CONFIG_CONTROL_FILE_CONTEXT fileContext;
     PDEVICE_CONTEXT targetContext;
-    WDFDEVICE targetDevice;
     PAMT_LIVE_FRAME output;
     size_t outputLength = 0;
     NTSTATUS status;
@@ -1145,30 +1132,14 @@ AmtPtpGetLiveFrame(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
         ? AmtConfigControlFileGetContext(fileObject)
         : NULL;
 
-    // BUG FIX: same TOCTOU as AmtPtpSetLiveEnabled, but the highest-traffic
-    // instance of it - the GUI calls this at up to 30 Hz for the whole
-    // time its Live preview is on, so the old check-then-use window
-    // (controlContext->TargetDevice == NULL check, then a second unguarded
-    // read of the same field for DeviceGetContext a few lines later) got
-    // exercised far more often than the one-shot SetLiveEnabled/dispatcher
-    // reads - and lines up exactly with the sleep-triggered
-    // surprise-removal/re-enumeration window this driver already goes to
-    // such lengths to synchronize against elsewhere (D0ExitLock/
-    // RecoveryLock). One locked snapshot, used once.
-    //
-    // BUG FIX (use-after-free): being the highest-frequency caller of
-    // AmtPtpConfigControlSnapshotTargetDevice also makes this the call site
-    // most likely to actually hit the reference-less UAF window against a
-    // torn-down FDO in practice - so it gets the same goto-exit/paired
-    // release treatment as AmtPtpSetLiveEnabled.
-    targetDevice = AmtPtpConfigControlSnapshotTargetDevice(Device);
+    // The dispatcher holds a referenced target device until this call returns.
 
-    if (targetDevice == NULL || fileContext == NULL) {
+    if (Device == NULL || fileContext == NULL) {
         status = STATUS_INVALID_DEVICE_STATE;
         goto exit;
     }
 
-    targetContext = DeviceGetContext(targetDevice);
+    targetContext = DeviceGetContext(Device);
 
     status = WdfRequestRetrieveOutputBuffer(
         Request, sizeof(AMT_LIVE_FRAME), (PVOID*)&output, &outputLength);
@@ -1199,7 +1170,6 @@ AmtPtpGetLiveFrame(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
     status = STATUS_SUCCESS;
 
 exit:
-    AmtPtpConfigControlReleaseTargetDevice(targetDevice);
     return status;
 }
 

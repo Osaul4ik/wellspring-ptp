@@ -254,7 +254,7 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     //
     // MICRO-OPT: quotient is computed once here (used for the shape check
     // below via a multiply instead of a second division/modulo, and reused
-    // as raw_n when PtpReportTouch is set) instead of separately computing
+    // as raw_n) instead of separately computing
     // "% fingerSize" for validation and "/ fingerSize" for raw_n further
     // down - fingerSize is a runtime value (from the latched device config,
     // not a compile-time constant), so the compiler cannot fold those into
@@ -274,12 +274,9 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
         return;
     }
 
-    if (pCtx->PtpReportTouch) {
-        raw_n = quotient;
-
-        if (raw_n > PTP_MAX_CONTACT_POINTS)
-            raw_n = PTP_MAX_CONTACT_POINTS;
-    }
+    raw_n = quotient;
+    if (raw_n > PTP_MAX_CONTACT_POINTS)
+        raw_n = PTP_MAX_CONTACT_POINTS;
 
     TouchBuffer = WdfMemoryGetBuffer(Buffer, NULL);
     if (TouchBuffer == NULL) {
@@ -327,38 +324,21 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     pCtx->LastReportTime = Now;
 
     BOOLEAN buttonSnapshot =
-        pCtx->PtpReportButton &&
-        TouchBuffer[pCtx->DeviceInfo->tp_button];
+        TouchBuffer[pCtx->DeviceInfo->tp_button] != 0;
 
     // RawFrame construction. AmtInputParseFrame zeroes and fully populates
-    // the struct itself (including TimestampQpc) when PtpReportTouch is
-    // set, so this path leaves that to it instead of zeroing twice; the
-    // else branch below is the one case nothing else initializes rawFrame,
-    // so it does that zeroing itself.
+    // the struct itself (including TimestampQpc).
     RAW_FRAME rawFrame;
 
-    if (pCtx->PtpReportTouch) {
-        // raw_n was validated and clamped before StateLock was taken.
-        // tpDelta selects the start of the finger-record area within the
-        // fixed USB transfer buffer.
-        UCHAR* f_base =
-            TouchBuffer + headerSize + tpDelta;
-
-        AmtInputParseFrame(
-            f_base,
-            fingerSize,
-            raw_n,
-            pCtx->DeviceInfo,
-            Now.QuadPart,
-            &rawFrame);
-    } else {
-        // AmtInputParseFrame isn't called on this path, so nothing else
-        // has initialized rawFrame yet - zero it here.
-        // PTPCore_ProcessFrame lifts all active contacts against an
-        // empty RawFrame.
-        RtlZeroMemory(&rawFrame, sizeof(rawFrame));
-        rawFrame.TimestampQpc = Now.QuadPart;
-    }
+    // Every supported configuration reports touch input.
+    UCHAR* f_base = TouchBuffer + headerSize + tpDelta;
+    AmtInputParseFrame(
+        f_base,
+        fingerSize,
+        raw_n,
+        pCtx->DeviceInfo,
+        Now.QuadPart,
+        &rawFrame);
 
     // PTPCore orchestration.
     PTP_CORE_FRAME coreFrame;
@@ -726,29 +706,11 @@ AmtPtpTryDeliverForceTouchClick(
 
 // AmtPtpEvtInputQueueReady
 //
-// WdfIoQueueReadyNotify callback for InputQueue (registered in
-// AmtPtpDeviceUsbKmQueueInitialize, Queue.c). Fires on every empty-to-
-// non-empty transition of InputQueue - which, since InputQueue is the
-// same manual queue mouhid.sys and the digitizer client both keep a read
-// continuously posted to, is essentially every ordinary HID read/re-post
-// cycle, not just the rare moment a force-touch click is actually
-// waiting on delivery. AmtPtpTryDeliverForceTouchClick's own IDLE check
-// is correct but requires StateLock - taking that spinlock on every one
-// of those cycles is unnecessary contention for a check that is IDLE
-// (i.e. a no-op) the overwhelming majority of the time.
-//
-// This unlocked pre-check is a pure hint, not a correctness dependency:
-// ForceTouchDeliveryState only ever transitions under StateLock, so a
-// stale read here can go either way and both are harmless -
-//   - stale IDLE (a transition to DOWN_PENDING on another CPU hasn't
-//     become visible yet): this call skips, but the interrupt-driven
-//     AmtPtpTryDeliverForceTouchClick call (or the next ReadyNotify
-//     firing) still picks it up - nothing is lost, only delayed by a
-//     cycle;
-//   - stale non-IDLE (a transition back to IDLE hasn't become visible
-//     yet): this call proceeds to take StateLock as it would have
-//     anyway, and AmtPtpTryDeliverForceTouchClick's own locked check
-//     re-reads the authoritative value and no-ops there instead.
+// Called when InputQueue transitions from empty to non-empty. A queued
+// HID read may be the only opportunity to deliver a pending Force Touch
+// DOWN/UP after the final physical touch interrupt. Always enter the
+// StateLock-protected delivery helper: an unsynchronized IDLE pre-check
+// here could miss that sole notification and strand the pending report.
 VOID
 AmtPtpEvtInputQueueReady(
     _In_ WDFQUEUE    Queue,
@@ -757,10 +719,6 @@ AmtPtpEvtInputQueueReady(
     PDEVICE_CONTEXT pCtx = (PDEVICE_CONTEXT)Context;
 
     UNREFERENCED_PARAMETER(Queue);
-
-    if (pCtx->ForceTouchDeliveryState == FORCE_TOUCH_DELIVERY_IDLE) {
-        return;
-    }
 
     AmtPtpTryDeliverForceTouchClick(pCtx);
 }

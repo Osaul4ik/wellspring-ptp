@@ -323,7 +323,7 @@ AmtContactKill(
     PACTIVE_CONTACT c = &Pool[index];
 
 #if DBG
-    NT_ASSERT(c->State == CONTACT_ACTIVE || c->State == CONTACT_GRACE);
+    NT_ASSERT(c->State == CONTACT_ACTIVE);
 #endif
 
     // Windows-facing position: the UP must land where Windows last saw
@@ -354,40 +354,6 @@ AmtContactRebindIdentity(
     c->ContactID  = AmtContactAssignId(NextContactId);
     c->Announced  = FALSE; // the new identity has not been reported yet
     c->PalmFrozen = FALSE; // ...and was never reported unconfident
-}
-
-VOID
-AmtContactEnterGrace(
-    _Inout_ PACTIVE_CONTACT Pool,
-    _In_    size_t          index,
-    _Out_   ULONG*          OldContactID,
-    _Out_   USHORT*         OldX,
-    _Out_   USHORT*         OldY
-)
-{
-    PACTIVE_CONTACT c = &Pool[index];
-
-#if DBG
-    NT_ASSERT(c->State == CONTACT_ACTIVE);
-#endif
-
-    *OldContactID = c->ContactID;
-    *OldX         = c->EmitX;
-    *OldY         = c->EmitY;
-
-    c->State = CONTACT_GRACE;
-}
-
-VOID
-AmtContactExpireGrace(_Inout_ PACTIVE_CONTACT Pool, _In_ size_t index)
-{
-    PACTIVE_CONTACT c = &Pool[index];
-
-#if DBG
-    NT_ASSERT(c->State == CONTACT_GRACE);
-#endif
-
-    RtlZeroMemory(c, sizeof(ACTIVE_CONTACT));
 }
 
 BOOLEAN
@@ -604,6 +570,7 @@ AmtContactGestureIsFast(
     _In_ USHORT                     rawY,
     _In_ LONGLONG                   nowQpc,
     _In_ LONGLONG                   PerfFrequencyHz,
+    _In_ LONGLONG                   VelocityWindowTicks,
     _In_ const AMT_POINTER_CONFIG*  PointerConfig,
     _In_ const AMT_SCROLL_CONFIG*   ScrollConfig,
     _In_ const AMT_POINTER_RUNTIME* PointerRuntime
@@ -614,8 +581,7 @@ AmtContactGestureIsFast(
     // thresholds; ComputeAlpha is FALSE exactly as there.
     const LONGLONG dtTicks = (Contact->LastSeenQpc == 0)
         ? 0 : (nowQpc - Contact->LastSeenQpc);
-    const LONGLONG windowTicks = (PerfFrequencyHz > 0)
-        ? (PerfFrequencyHz * AMT_VELOCITY_WINDOW_MS) / 1000 : 0;
+    const LONGLONG windowTicks = VelocityWindowTicks;
     INT alphaUnused;
 
     return AmtContactEvaluateVelocity(
@@ -641,6 +607,7 @@ AmtContactUpdate(
     _In_    USHORT          slotHint,
     _In_    LONGLONG        nowQpc,
     _In_    LONGLONG        PerfFrequencyHz,
+    _In_    LONGLONG        VelocityWindowTicks,
     _In_    BOOLEAN         aliveCountIsOne,
     _In_    BOOLEAN         gestureActive,
     _In_    BOOLEAN         gestureFast,
@@ -672,8 +639,7 @@ AmtContactUpdate(
     // has been building up, i.e. frames since the anchor was last committed
     // plus this frame - not just this frame (see AMT_VELOCITY_WINDOW_MS).
     // Identical to dtTicks whenever the anchor was committed last frame.
-    const LONGLONG windowTicks = (PerfFrequencyHz > 0)
-        ? (PerfFrequencyHz * AMT_VELOCITY_WINDOW_MS) / 1000 : 0;
+    const LONGLONG windowTicks = VelocityWindowTicks;
     LONGLONG velocityDtTicks =
         AmtContactVelocityDtTicks(Contact, dtTicks, windowTicks);
 

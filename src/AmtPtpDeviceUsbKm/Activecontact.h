@@ -43,7 +43,6 @@ typedef enum _CONTACT_STATE
 {
     CONTACT_FREE = 0,  // free pool slot, no identity
     CONTACT_ACTIVE,    // finger down, identity live
-    CONTACT_GRACE,     // same-frame quarantine after gesture lift
 } CONTACT_STATE;
 
 // One pool entry; pool slot is not the identity.
@@ -293,20 +292,6 @@ AmtContactKill(
     _Out_   USHORT*         OldY
 );
 
-// Move an active contact into grace state for one frame.
-VOID
-AmtContactEnterGrace(
-    _Inout_ PACTIVE_CONTACT Pool,
-    _In_    size_t          index,
-    _Out_   ULONG*          OldContactID,
-    _Out_   USHORT*         OldX,
-    _Out_   USHORT*         OldY
-);
-
-// Drop a grace contact and clear its slot.
-VOID
-AmtContactExpireGrace(_Inout_ PACTIVE_CONTACT Pool, _In_ size_t index);
-
 // Check whether a candidate passes the deadzone test.
 BOOLEAN
 AmtContactEvaluateDeadzone(
@@ -328,6 +313,7 @@ AmtContactUpdate(
     _In_    USHORT          slotHint,
     _In_    LONGLONG        nowQpc,
     _In_    LONGLONG        PerfFrequencyHz,
+    _In_    LONGLONG        VelocityWindowTicks,
     _In_    BOOLEAN         aliveCountIsOne,
     _In_    BOOLEAN         gestureActive,
     _In_    BOOLEAN         gestureFast,   // frame-level FAST decision (AmtContactGestureIsFast); scroll scale is
@@ -355,6 +341,7 @@ AmtContactGestureIsFast(
     _In_ USHORT                     rawY,
     _In_ LONGLONG                   nowQpc,
     _In_ LONGLONG                   PerfFrequencyHz,
+    _In_ LONGLONG                   VelocityWindowTicks,
     _In_ const AMT_POINTER_CONFIG*  PointerConfig,
     _In_ const AMT_SCROLL_CONFIG*   ScrollConfig,
     _In_ const AMT_POINTER_RUNTIME* PointerRuntime

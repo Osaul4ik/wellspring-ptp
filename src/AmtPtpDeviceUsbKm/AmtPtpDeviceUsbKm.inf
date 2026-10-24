@@ -83,7 +83,7 @@ HKR,,"SelectiveSuspendEnabled",0x00010001,1
 ; nothing. Flip to 1 (regedit, this device's "Device Parameters" key) to
 ; enable "[AmtPtp] ..." DbgPrintEx output for lifecycle debugging. Not
 ; related to the GUI's separate "Live" frame monitor.
-HKR,,"DebugMode",0x00010001,0
+HKR,,"DebugMode",0x00010003,0
 
 [AmtPtpDeviceUsbKm_Service_Inst]
 DisplayName   = %AmtPtpDeviceUsbKm.SVCDESC%

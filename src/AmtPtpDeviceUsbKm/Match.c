@@ -387,7 +387,6 @@ AmtMatchBuildCandidates(
             // A new soft tap is tracked but not trusted yet.
             cand->X              = rc->X;
             cand->Y              = rc->Y;
-            cand->TipDropApplied = 0;
             cand->Unconfirmed    = 1;
             OutCandidates->Count++;
             continue;
@@ -407,7 +406,6 @@ AmtMatchBuildCandidates(
         cand->Y = isStationary ? anchorY : rc->Y;
 
         // Only the stationary bridge reports a stale position.
-        cand->TipDropApplied = isStationary ? 1 : 0;
 
         // Anchored bridges stay confirmed; only true births stay unconfirmed.
 

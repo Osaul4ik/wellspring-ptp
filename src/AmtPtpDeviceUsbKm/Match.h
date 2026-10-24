@@ -20,9 +20,7 @@ typedef struct _MATCH_CANDIDATE
     USHORT  Pressure;       // raw ADC units - matching tie-break only
     BOOLEAN PalmLocal;       // excluded from matching/reporting
     BOOLEAN IdentityBreak;   // firmware origin==0 signal
-    UCHAR   TipDropApplied;  // non-zero when X/Y is stale (debounce bridge).
-                             // Position provenance only - does NOT drive
-                             // Confidence.
+
 
     // TRUE for a brand-new, below-tip-threshold contact with no pool anchor.
     // Matching/gesture-taint quality signal ONLY (aliveCount gating in
