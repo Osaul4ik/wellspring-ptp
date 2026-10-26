@@ -277,7 +277,6 @@ typedef struct _DEVICE_CONTEXT
     // Single-contact HID coordinates withheld during hardware Force Touch.
     BOOLEAN                 ForceMotionHeld;
     BOOLEAN                 ForceMotionDragging;
-    BOOLEAN                 ForceMotionWasPressed;
     ULONG                   ForceMotionContactId;
     USHORT                  ForceMotionX;
     USHORT                  ForceMotionY;
@@ -909,6 +908,7 @@ VOID AmtPointerConfigClamp(_Inout_ PAMT_POINTER_CONFIG Config);
 _IRQL_requires_(PASSIVE_LEVEL)
 VOID AmtScrollConfigLoadFromRegistry(_In_ WDFDEVICE Device, _Inout_ PAMT_SCROLL_CONFIG Config);
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID AmtScrollConfigSaveToRegistry(_In_ WDFDEVICE Device, _In_ const AMT_SCROLL_CONFIG* Config);
 VOID AmtScrollConfigClamp(_Inout_ PAMT_SCROLL_CONFIG Config);
 
