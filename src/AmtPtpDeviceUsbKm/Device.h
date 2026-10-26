@@ -276,6 +276,7 @@ typedef struct _DEVICE_CONTEXT
     UCHAR                   ClickArbitrationStallFrames;
     // Single-contact HID coordinates withheld during hardware Force Touch.
     BOOLEAN                 ForceMotionHeld;
+    BOOLEAN                 ForceMotionWasPressed;
     BOOLEAN                 ForceMotionDragging;
     ULONG                   ForceMotionContactId;
     USHORT                  ForceMotionX;
