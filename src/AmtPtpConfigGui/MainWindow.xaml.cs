@@ -1594,8 +1594,6 @@ namespace AmtPtpConfigGui
             if (SmallContactRejectionGroup != null)
                 SmallContactRejectionGroup.Visibility = _forceTouchSupported ? Visibility.Collapsed : Visibility.Visible;
             // Haptics are pressure-triggered: pointless without a pressure sensor.
-            if (HapticsGroup != null)
-                HapticsGroup.Visibility = _forceTouchSupported ? Visibility.Visible : Visibility.Collapsed;
 
             // The tray context menu is rebuilt on demand from RefreshTrayMenu,
             // but if it's already open/cached it should reflect the change
@@ -2422,7 +2420,7 @@ namespace AmtPtpConfigGui
 
         private void HapticsGroup_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
-            if (!HapticsGroup.IsVisible)
+            if (!ForceTouchGroup.IsVisible)
             {
                 _hapticsTimer.Stop();
                 return;
@@ -2442,8 +2440,13 @@ namespace AmtPtpConfigGui
             HapticsStatus status = _haptics.Status;
             bool running = status.State == HapticsState.Running;
 
-            PbHapticsPressure.Value = Math.Min(status.Pressure, PbHapticsPressure.Maximum);
-            LblHapticsPressure.Text = running ? $"{status.Pressure} · {status.Clicks} clicks" : "—";
+            // The live pressure readout is only visible while the general
+            // Live switch is on (HapticsLivePanel), so skip updating it otherwise.
+            if (ChkLive.IsChecked == true)
+            {
+                PbHapticsPressure.Value = Math.Min(status.Pressure, PbHapticsPressure.Maximum);
+                LblHapticsPressure.Text = running ? $"{status.Pressure} · {status.Clicks} clicks" : "—";
+            }
             LblHapticsStatus.Text = status.State switch
             {
                 HapticsState.Running => "Active · second click is on",
@@ -2474,7 +2477,8 @@ namespace AmtPtpConfigGui
             try
             {
                 cfg = cfg.Clamped();
-                SlForceTapThreshold.Value = cfg.ForceTapThreshold;
+                // ForceTapThreshold is not shown here any more: it is driven
+                // by the haptics "Pressure needed" slider (SlHapticsThreshold).
                 SlForceTapDragLockoutDistance.Value = cfg.ForceTapDragLockoutDistance;
                 SlForceTouchHardTapHoldMs.Value = cfg.ForceTouchHardTapHoldMs;
                 ChkForceTouchEnabled.IsChecked = cfg.ForceTouchEnabled != 0;
@@ -2546,7 +2550,9 @@ namespace AmtPtpConfigGui
         private PointerConfig ReadPointerConfigFromControls()
         {
             var c = PointerConfig.Default;
-            c.ForceTapThreshold = (uint)SlForceTapThreshold.Value;
+            // Single source of truth: Force Touch activates at exactly the
+            // haptics "Pressure needed" value.
+            c.ForceTapThreshold = (uint)Math.Round(SlHapticsThreshold.Value);
             c.ForceTapDragLockoutDistance = (uint)SlForceTapDragLockoutDistance.Value;
             c.ForceTouchHardTapHoldMs = (uint)SlForceTouchHardTapHoldMs.Value;
             c.ForceTouchEnabled = ChkForceTouchEnabled.IsChecked == true ? 1u : 0u;
@@ -2587,8 +2593,7 @@ namespace AmtPtpConfigGui
 
         private void UpdatePointerLabels()
         {
-            if (LblForceTapThreshold == null) return;
-            LblForceTapThreshold.Text = $"{SlForceTapThreshold.Value:0}";
+            if (LblForceTapDragLockoutDistance == null) return;
             LblForceTapDragLockoutDistance.Text = $"{SlForceTapDragLockoutDistance.Value:0}";
             LblForceTouchHardTapHoldMs.Text = $"{SlForceTouchHardTapHoldMs.Value / 1000.0:0.00} s";
             LblCursorSmoothing.Text = $"{SlCursorSmoothing.Value:0}%";
@@ -2637,7 +2642,6 @@ namespace AmtPtpConfigGui
                 ChkForceTouchAction == null ||
                 ChkRequirePressure == null ||
                 ChkRequirePressureContinuously == null ||
-                SlForceTapThreshold == null ||
                 SlForceTapDragLockoutDistance == null ||
                 SlForceTouchHardTapHoldMs == null ||
                 ForceTapActionPanel == null ||
@@ -2651,7 +2655,6 @@ namespace AmtPtpConfigGui
             ChkRequirePressure.IsEnabled = master;
             ChkRequirePressureContinuously.IsEnabled = master;
 
-            SlForceTapThreshold.IsEnabled = action;
             SlForceTapDragLockoutDistance.IsEnabled = action;
             SlForceTouchHardTapHoldMs.IsEnabled = _forceTouchSupported
                 ? action
@@ -3146,6 +3149,13 @@ namespace AmtPtpConfigGui
                     // settings: keep the current ones rather than reset them.
                     if (profile.Haptics != null)
                         LoadHapticsIntoControls(profile.Haptics);
+                    else
+                        // No haptic settings in the file: the Force Touch
+                        // pressure from the pointer config still has to land
+                        // on the single "Pressure needed" slider.
+                        SlHapticsThreshold.Value = Math.Clamp(
+                            (int)profile.Pointer.ForceTapThreshold,
+                            HapticsConfig.ThresholdMin, HapticsConfig.ThresholdMax);
                     DrawPreview();
                     SetBottomStatus($"Profile (Palm + Scroll + Pointer + Haptics) loaded: {dlg.FileName}. Click “Save” to write it to the driver.");
                 }

@@ -26,7 +26,16 @@ Haptic settings are part of the **profile**, like Palm, Pointer and Scroll:
 they follow profile switching, **Reset to defaults**, profile export/import and
 backup/restore, and they are applied by the bottom-bar **Save**. A profile or
 file written before haptics existed keeps the current haptic settings on load.
-The group is shown only on trackpads with a pressure sensor, like Force Touch.
+The Haptics settings now live in the same **Force Touch & Haptics** group as
+the Force Touch options. The group is shown only on trackpads with a pressure
+sensor.
+
+**Pressure needed** is the single pressure threshold for the whole group: the
+Force Touch action (driver `ForceTapThreshold`) and the second haptic click both
+fire at exactly this value. There is no separate Force Touch threshold any more.
+The slider moves in 1-unit steps (arrow keys; PageUp/PageDown for 10) over
+50-1000, and it stays active even if the second haptic click is turned off,
+because it also drives Force Touch.
 
 ## Behavior
 
@@ -37,12 +46,12 @@ the window is hidden in the tray, but not after the app is closed (use
 or the actuator driver is not installed, it asks the driver for nothing.
 
 The default threshold is 265 raw pressure units, with release at 70% of that
-value. Two fresh samples above threshold trigger one waveform. Holding the
+value. The same value is used by the driver for Force Touch. Two fresh samples above threshold trigger one waveform. Holding the
 press does not repeat it; pressure must fall below the release threshold to
 rearm. It also requires one confident non-palm contact and physical
 button-down, imposes a 250 ms cooldown, and resets after a stale feed.
 
-The raw scale is device-specific; use the live meter to pick a threshold.
+The raw scale is device-specific; use the live meter to pick a threshold (the meter is shown only while the toolbar's **Live** switch is on).
 Light/firm are captured waveform names, not a guarantee of perceptibly
 different strength on every device. **Test click** plays the selected waveform
 without pressing, saved or not.

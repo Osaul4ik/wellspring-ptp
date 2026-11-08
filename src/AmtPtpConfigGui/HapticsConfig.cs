@@ -11,7 +11,7 @@ namespace AmtPtpConfigGui.Native
     {
         public const int ThresholdMin = 50;
         public const int ThresholdMax = 1000;
-        public const int ThresholdStep = 5;
+        public const int ThresholdStep = 1;
         public const int WaveformLight = 0;
         public const int WaveformFirm = 1;
 

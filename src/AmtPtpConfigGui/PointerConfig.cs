@@ -61,8 +61,8 @@ namespace AmtPtpConfigGui.Native
         public const uint ActionContextMenu = 0;
         public const uint ActionMiddleClick = 1;
         public const uint ActionDoubleClick = 2;
-        public const uint ThresholdMin = 200;
-        public const uint ThresholdMax = 400;
+        public const uint ThresholdMin = 50;
+        public const uint ThresholdMax = 1000;
         public const uint ActionMax = 2;
         public const uint EmulationHoldMsMin = 200;
         public const uint EmulationHoldMsMax = 2000;

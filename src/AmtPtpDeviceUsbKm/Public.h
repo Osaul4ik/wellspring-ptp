@@ -247,11 +247,12 @@ typedef struct _AMT_POINTER_CONFIG
     /* ForceTouchHardTapHoldMs                 */ 1300                     \
 }
 
-// Sane clamp range - raw pressure realistically spans ~0-300, so keep the
-// threshold well inside that instead of letting it go degenerate (0 would
-// fire on any touch; a huge value would make Force Tap unreachable).
-#define AMT_POINTER_THRESHOLD_MIN   200
-#define AMT_POINTER_THRESHOLD_MAX   400
+// Sane clamp range - keep the threshold away from degenerate values (0 would
+// fire on any touch; a huge value would make Force Tap unreachable). The range
+// matches the GUI's haptics "Pressure needed" slider (HapticsConfig.ThresholdMin/
+// Max), because ForceTapThreshold is now driven solely by that slider.
+#define AMT_POINTER_THRESHOLD_MIN   50
+#define AMT_POINTER_THRESHOLD_MAX   1000
 #define AMT_POINTER_ACTION_MAX        2   // highest valid AMT_POINTER_ACTION_* value
 
 // Force Touch emulation hold-duration range/step, in milliseconds. The GUI

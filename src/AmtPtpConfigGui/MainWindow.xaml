@@ -1434,26 +1434,47 @@
                             </GroupBox>
 
 
-                            <GroupBox x:Name="ForceTouchGroup" Margin="0,12,0,0">
+                            <GroupBox x:Name="ForceTouchGroup" Margin="0,12,0,0" IsVisibleChanged="HapticsGroup_IsVisibleChanged">
                                 <GroupBox.Header>
                                     <StackPanel>
-                                        <TextBlock Text="Force Touch" Style="{StaticResource SectionTitle}"/>
-                                        <TextBlock Text="PRESSURE · hard press behavior" Style="{StaticResource SectionCaption}"/>
+                                        <TextBlock Text="Force Touch &amp; Haptics" Style="{StaticResource SectionTitle}"/>
+                                        <TextBlock Text="PRESSURE · hard press, Force Tap action and second click" Style="{StaticResource SectionCaption}"/>
                                     </StackPanel>
                                 </GroupBox.Header>
                                 <StackPanel>
                                     <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Force touch threshold" ToolTip="Pressure threshold used to recognize a Force Touch event. Increase it to require a harder press; decrease it to trigger Force Touch with less pressure."/>
-                                        <TextBlock x:Name="LblForceTapThreshold" Grid.Column="1" Style="{StaticResource SliderValue}"/>
+                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Pressure needed" ToolTip="Raw pressure that triggers Force Touch and the second haptic click. This is the only pressure setting: both the Force Tap action and the haptic click fire at exactly this value. Lower is lighter, higher is firmer. Use arrow keys for 1-unit steps (PageUp/PageDown for 10). The scale is device-specific; turn on Live in the toolbar to see the live pressure meter below and pick a value."/>
+                                        <TextBlock x:Name="LblHapticsThreshold" Grid.Column="1" Style="{StaticResource SliderValue}"/>
                                     </Grid>
-                                    <Slider x:Name="SlForceTapThreshold" Minimum="200" Maximum="400" ValueChanged="PointerSlider_Changed"/>
-                                    <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <Slider x:Name="SlHapticsThreshold" Minimum="50" Maximum="1000" SmallChange="1" LargeChange="10" IsSnapToTickEnabled="True" TickFrequency="1" ValueChanged="HapticsSlider_Changed"/>
+                                    <!-- Shown only while the toolbar's general "Live" switch is on. -->
+                                    <StackPanel x:Name="HapticsLivePanel">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, ElementName=ChkLive}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <TextBlock Style="{StaticResource SliderLabel}" Text="Live pressure" ToolTip="Current pressure of a single finger, from the helper. Press as hard as you want Force Touch and the second click to need."/>
+                                            <TextBlock x:Name="LblHapticsPressure" Grid.Column="1" Style="{StaticResource SliderValue}" Text="—"/>
+                                        </Grid>
+                                        <ProgressBar x:Name="PbHapticsPressure" Minimum="0" Maximum="1000" Height="8" Margin="0,4,0,0"
+                                                     Foreground="{DynamicResource AccentBrush}"
+                                                     Background="{DynamicResource ControlFillBrush}"
+                                                     BorderBrush="{DynamicResource ControlStrokeBrush}"/>
+                                    </StackPanel>
+                                    <Grid Style="{StaticResource SettingRow}" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <TextBlock Style="{StaticResource SliderLabel}" Text="Drag cancel distance" ToolTip="How far the contact may drift from where the press started before Force Touch is cancelled and treated as an ordinary drag instead. Raw sensor units, not pixels."/>
                                         <TextBlock x:Name="LblForceTapDragLockoutDistance" Grid.Column="1" Style="{StaticResource SliderValue}"/>
                                     </Grid>
                                     <Slider x:Name="SlForceTapDragLockoutDistance" Minimum="40" Maximum="400" SmallChange="10" LargeChange="10" IsSnapToTickEnabled="True" TickFrequency="10" ValueChanged="PointerSlider_Changed"/>
-                                    <CheckBox x:Name="ChkForceTouchEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,10,0,4" Content="Enable Force Touch" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="Master switch for Force Touch on trackpads that support it. When on, the three options below become available and each can be turned on or off independently. When off, none of them has any effect. On standard trackpads the driver ignores this setting."/>
-                                    <CheckBox x:Name="ChkForceTouchAction" Style="{StaticResource OptionCheckBox}" Margin="18,4,0,4" Content="Force Touch action" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="A hard press (Force Touch) triggers the Force Tap action chosen below. Turn this off to keep the pressure options below working without any Force Tap action being sent."/>
+                                    <CheckBox x:Name="ChkForceTouchEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,10,0,4" Content="Enable Force Touch" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="Master switch for Force Touch on trackpads that support it. When on, the options below become available and each can be turned on or off independently. When off, none of them has any effect. On standard trackpads the driver ignores this setting."/>
+                                    <CheckBox x:Name="ChkForceTouchAction" Style="{StaticResource OptionCheckBox}" Margin="18,4,0,4" Content="Force Touch action" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="A hard press (pressure above “Pressure needed”) triggers the Force Tap action chosen below. Turn this off to keep the haptic click and the pressure options working without any Force Tap action being sent."/>
                                     <CheckBox x:Name="ChkRequirePressure" Style="{StaticResource OptionCheckBox}" Margin="18,4,0,4" Content="Require pressure to activate contact" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="For Force Touch-capable trackpads, a brand-new contact with zero pressure is ignored until pressure becomes positive. Existing contacts are unaffected."/>
                                     <CheckBox x:Name="ChkRequirePressureContinuously" Style="{StaticResource OptionCheckBox}" Margin="18,4,0,8" Content="Require pressure continuously" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="For Force Touch-capable trackpads, a contact is ignored on every frame while pressure is zero. If pressure disappears while you move, the contact is treated as absent until pressure becomes positive again."/>
                                     <TextBlock x:Name="LblForceTapAction" Text="Force Tap action" Style="{StaticResource SliderLabel}" Margin="0,10,0,6" ToolTip="Action emitted when Force Touch is recognized. Choose the mouse action that best matches how you want a hard press to behave."/>
@@ -1462,33 +1483,8 @@
                                         <RadioButton x:Name="RbActionMiddleClick" Content="Middle mouse button" GroupName="ForceTapAction" Margin="0,4" Checked="PointerAction_Changed" ToolTip="Send a middle mouse button click."/>
                                         <RadioButton x:Name="RbActionDoubleClick" Content="Double click" GroupName="ForceTapAction" Margin="0,4" Checked="PointerAction_Changed" ToolTip="Send a double left-click."/>
                                     </StackPanel>
-                                    <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="Force Touch settings are available in the normal mode; Pro Mode contains only the lower-level pointer tuning parameters."/>
-                                </StackPanel>
-                            </GroupBox>
-
-                            <GroupBox x:Name="HapticsGroup" Margin="0,12,0,0" IsVisibleChanged="HapticsGroup_IsVisibleChanged">
-                                <GroupBox.Header>
-                                    <StackPanel>
-                                        <TextBlock Text="Haptics" Style="{StaticResource SectionTitle}"/>
-                                        <TextBlock Text="PRESSURE · second click on a firm press" Style="{StaticResource SectionCaption}"/>
-                                    </StackPanel>
-                                </GroupBox.Header>
-                                <StackPanel>
-                                    <CheckBox x:Name="ChkHapticsEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,0,0,4" Content="Enable second haptic click" ToolTip="After the physical click, pressing harder fires a second haptic click. Uses the trackpad's real pressure sensor."/>
-                                    <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Pressure needed" ToolTip="Raw pressure that triggers the second click. Lower is lighter, higher is firmer. The scale is device-specific; use the live meter below to pick a value."/>
-                                        <TextBlock x:Name="LblHapticsThreshold" Grid.Column="1" Style="{StaticResource SliderValue}"/>
-                                    </Grid>
-                                    <Slider x:Name="SlHapticsThreshold" Minimum="50" Maximum="1000" SmallChange="5" LargeChange="25" IsSnapToTickEnabled="True" TickFrequency="5" ValueChanged="HapticsSlider_Changed"/>
+                                    <CheckBox x:Name="ChkHapticsEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,14,0,4" Content="Enable second haptic click" ToolTip="After the physical click, pressing harder than “Pressure needed” fires a second haptic click. Uses the trackpad's real pressure sensor. Turning this off does not change when Force Touch triggers."/>
                                     <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Live pressure" ToolTip="Current pressure of a single finger, from the helper. Press as hard as you want the second click to need."/>
-                                        <TextBlock x:Name="LblHapticsPressure" Grid.Column="1" Style="{StaticResource SliderValue}" Text="—"/>
-                                    </Grid>
-                                    <ProgressBar x:Name="PbHapticsPressure" Minimum="0" Maximum="1000" Height="8" Margin="0,4,0,0"
-                                                 Foreground="{DynamicResource AccentBrush}"
-                                                 Background="{DynamicResource ControlFillBrush}"
-                                                 BorderBrush="{DynamicResource ControlStrokeBrush}"/>
-                                    <Grid Style="{StaticResource SettingRow}" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <TextBlock Style="{StaticResource SliderLabel}" Text="Click waveform" ToolTip="Light and firm are captured actuator waveforms; they may feel alike on some units."/>
                                         <ComboBox x:Name="CmbHapticsWaveform" Grid.Column="1" Width="120" SelectedIndex="1">
                                             <ComboBoxItem Content="Light"/>
@@ -1497,7 +1493,8 @@
                                     </Grid>
                                     <Button Content="Test click" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Height="36" Padding="14,0" Margin="0,12,0,0" Click="HapticsTest_Click" ToolTip="Fire the selected waveform once, without pressing."/>
                                     <TextBlock x:Name="LblHapticsStatus" Style="{StaticResource HintText}" Text="Checking haptics…"/>
-                                    <TextBlock Style="{StaticResource HintText}" Text="Haptic settings are part of the profile and are applied with “Save”. The second click works while this window is hidden in the tray, but not after the app is closed. It needs the Wellspring haptic actuator driver. To get only the haptic feedback, turn off “Force Touch action”."/>
+                                    <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="“Pressure needed” is the single pressure threshold: the Force Tap action and the second haptic click both fire at that value. Force Touch and haptic settings are part of the profile and are applied with “Save”. The second click works while this window is hidden in the tray, but not after the app is closed. It needs the Wellspring haptic actuator driver. To get only the haptic feedback, turn off “Force Touch action”."/>
+                                    <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="Force Touch settings are available in the normal mode; Pro Mode contains only the lower-level pointer tuning parameters."/>
                                 </StackPanel>
                             </GroupBox>
 
