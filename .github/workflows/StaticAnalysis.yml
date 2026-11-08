@@ -127,14 +127,14 @@ jobs:
         $buildLog = Join-Path $logDir "haptic.log"
         $treatAsErrors = $env:CA_TREAT_WARNINGS_AS_ERRORS
 
-        # OutDir/IntDir are set explicitly: this project has no output
-        # layout of its own, and MSBuild appends the trailing slash.
+        # Output folders come from the vcxproj itself, like the touchpad
+        # driver's. Do not override OutDir/IntDir here: without a trailing
+        # backslash MSBuild only warns (MSB8004) and cl then fails on /Fo with
+        # several sources (D8036).
         & msbuild "$env:HAPTIC_PROJECT_DIR\$env:HAPTIC_DRIVER_NAME.vcxproj" `
           /p:Configuration=$env:CONFIGURATION `
           /p:Platform=$env:PLATFORM `
           /p:WindowsTargetPlatformVersion=10.0.26100.0 `
-          "/p:OutDir=$env:GITHUB_WORKSPACE\build-haptic" `
-          "/p:IntDir=$env:GITHUB_WORKSPACE\obj-haptic" `
           /p:RunCodeAnalysis=true `
           /p:EnableCppCoreCheck=true `
           /p:CodeAnalysisTreatWarningsAsErrors=$treatAsErrors `
