@@ -18,6 +18,9 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   PROJECT_DIR: src/AmtPtpDeviceUsbKm
   DRIVER_NAME: AmtPtpDeviceUsbKm
+  # Experimental haptic actuator driver (src/AmtHapticDeviceUsbKm).
+  HAPTIC_PROJECT_DIR: src/AmtHapticDeviceUsbKm
+  HAPTIC_DRIVER_NAME: AmtHapticDeviceUsbKm
   CONFIGURATION: Release
   PLATFORM: x64
   # Strict mode: PREfast warnings fail the build, not just get logged.
@@ -108,6 +111,46 @@ jobs:
         }
 
         Write-Host "OK: build + PREfast analysis completed with exit code 0, zero warnings (enforced by /W4 /WX)"
+      shell: pwsh
+
+    # Same strict PREfast pass for the haptic actuator driver. !cancelled()
+    # instead of the default success() so a finding in one driver does not
+    # hide the result for the other: both show up in one run.
+    - name: Build Haptic Actuator driver with PREfast (/analyze) enabled
+      if: ${{ !cancelled() }}
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $logDir = Join-Path $env:GITHUB_WORKSPACE "static-analysis-logs"
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        $binLog = Join-Path $logDir "haptic.binlog"
+        $buildLog = Join-Path $logDir "haptic.log"
+        $treatAsErrors = $env:CA_TREAT_WARNINGS_AS_ERRORS
+
+        # OutDir/IntDir are set explicitly: this project has no output
+        # layout of its own, and MSBuild appends the trailing slash.
+        & msbuild "$env:HAPTIC_PROJECT_DIR\$env:HAPTIC_DRIVER_NAME.vcxproj" `
+          /p:Configuration=$env:CONFIGURATION `
+          /p:Platform=$env:PLATFORM `
+          /p:WindowsTargetPlatformVersion=10.0.26100.0 `
+          "/p:OutDir=$env:GITHUB_WORKSPACE\build-haptic" `
+          "/p:IntDir=$env:GITHUB_WORKSPACE\obj-haptic" `
+          /p:RunCodeAnalysis=true `
+          /p:EnableCppCoreCheck=true `
+          /p:CodeAnalysisTreatWarningsAsErrors=$treatAsErrors `
+          /nologo `
+          /verbosity:normal `
+          /clp:Summary `
+          "/bl:$binLog" `
+          2>&1 | Tee-Object -FilePath $buildLog
+
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+          Write-Host "::error::Haptic Actuator msbuild exited with code $exitCode (build failure and/or PREfast finding - see haptic.log)"
+          exit $exitCode
+        }
+
+        Write-Host "OK: Haptic Actuator build + PREfast analysis completed with exit code 0"
       shell: pwsh
 
     - name: Upload build and analysis logs

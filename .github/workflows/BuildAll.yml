@@ -16,6 +16,9 @@ env:
   # ---- Драйвер ----
   PROJECT_DIR: src/AmtPtpDeviceUsbKm
   DRIVER_NAME: AmtPtpDeviceUsbKm
+  # ---- Експериментальний haptic-драйвер актуатора (окрема папка, окремий .sys) ----
+  HAPTIC_PROJECT_DIR: src/AmtHapticDeviceUsbKm
+  HAPTIC_DRIVER_NAME: AmtHapticDeviceUsbKm
   CONFIGURATION: Release
   PLATFORM: x64
   # ---- GUI ----
@@ -306,6 +309,113 @@ jobs:
         SIGN_CERT_PASSWORD: ${{ secrets.CERT_PWD }}
 
     # =====================================================================
+    # Експериментальний драйвер haptic-актуатора (src/AmtHapticDeviceUsbKm): той
+    # самий конвеєр, що й для основного драйвера - збірка, StampInf, Inf2Cat,
+    # підпис тим самим сертифікатом (тому окремий .cer не експортується:
+    # довіра вже встановлюється через .cer з основного пакета). Інструменти
+    # (STAMPINF_PATH / INF2CAT_PATH / SIGNTOOL_PATH) і версія/дата вже
+    # знайдені/обчислені вище. Пакет іде в окрему теку HapticDriver, не в
+    # Driver, і НЕ потрапляє в інсталлер (драйвер експериментальний).
+    # =====================================================================
+    - name: Build Haptic Actuator Driver
+      run: |
+        # OutDir/IntDir задаємо явно: у цього проєкту немає власної схеми
+        # вихідних тек, а MSBuild сам додає завершальний слеш.
+        msbuild "$env:HAPTIC_PROJECT_DIR\$env:HAPTIC_DRIVER_NAME.vcxproj" `
+          /p:Configuration=$env:CONFIGURATION `
+          /p:Platform=$env:PLATFORM `
+          /p:WindowsTargetPlatformVersion=10.0.26100.0 `
+          "/p:OutDir=$env:GITHUB_WORKSPACE\artifacts\haptic-build" `
+          "/p:IntDir=$env:GITHUB_WORKSPACE\artifacts\haptic-obj" `
+          /nologo /verbosity:minimal /clp:Summary
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      shell: pwsh
+
+    - name: Prepare Haptic Actuator driver package folder
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $sysPath    = "artifacts\haptic-build\$env:HAPTIC_DRIVER_NAME.sys"
+        $pdbPath    = "artifacts\haptic-build\$env:HAPTIC_DRIVER_NAME.pdb"
+        $infSrcPath = "$env:HAPTIC_PROJECT_DIR\$env:HAPTIC_DRIVER_NAME.inf"
+        $packageDir = "artifacts\haptic-driver"
+
+        if (-not (Test-Path $sysPath)) {
+          Write-Error "Built .sys not found: $sysPath"
+          exit 1
+        }
+        if (-not (Test-Path $infSrcPath)) {
+          Write-Error ".inf file not found: $infSrcPath"
+          exit 1
+        }
+
+        New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+        Copy-Item -Path $sysPath -Destination $packageDir -Force
+        Copy-Item -Path $infSrcPath -Destination $packageDir -Force
+        if (Test-Path $pdbPath) {
+          Copy-Item -Path $pdbPath -Destination $packageDir -Force
+        }
+
+        $infPath = Join-Path $packageDir "$env:HAPTIC_DRIVER_NAME.inf"
+        & "$env:STAMPINF_PATH" -f "$infPath" -a amd64 -d "$env:DRIVER_DATE" -v "$env:DRIVER_VERSION" -k 1.33
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "StampInf exited with error code $LASTEXITCODE."
+          exit 1
+        }
+
+        Write-Host "OK: staged Haptic Actuator driver files:"
+        Get-ChildItem $packageDir | ForEach-Object { Write-Host "  - $($_.Name)" }
+
+        Add-Content -Path $env:GITHUB_ENV -Value "HAPTIC_PACKAGE_DIR=$packageDir"
+        Add-Content -Path $env:GITHUB_ENV -Value "HAPTIC_SYS_PATH=$packageDir\$env:HAPTIC_DRIVER_NAME.sys"
+        Add-Content -Path $env:GITHUB_ENV -Value "HAPTIC_CAT_PATH=$packageDir\$env:HAPTIC_DRIVER_NAME.cat"
+      shell: pwsh
+
+    - name: Generate CAT file for Haptic Actuator driver (Inf2Cat)
+      run: |
+        $ErrorActionPreference = "Stop"
+        $fullPackageDir = (Resolve-Path $env:HAPTIC_PACKAGE_DIR).Path
+        & "$env:INF2CAT_PATH" /driver:"$fullPackageDir" /os:10_X64 /verbose
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Inf2Cat exited with error code $LASTEXITCODE."
+          exit 1
+        }
+        if (-not (Test-Path $env:HAPTIC_CAT_PATH)) {
+          Write-Error "Inf2Cat did not report an error, but no .cat file was produced at $env:HAPTIC_CAT_PATH."
+          exit 1
+        }
+        Write-Host "OK: .cat generated -> $env:HAPTIC_CAT_PATH"
+      shell: pwsh
+
+    - name: Sign Haptic Actuator .sys and .cat with SignTool
+      run: |
+        $ErrorActionPreference = "Stop"
+        $pfxPath = Join-Path $env:TEMP "signcert-haptic.pfx"
+
+        try {
+          $bytes = [Convert]::FromBase64String($env:SIGN_CERT_PFX)
+          [IO.File]::WriteAllBytes($pfxPath, $bytes)
+
+          foreach ($target in @($env:HAPTIC_SYS_PATH, $env:HAPTIC_CAT_PATH)) {
+            Write-Host "==> Signing $target"
+            & "$env:SIGNTOOL_PATH" sign /v /fd SHA256 /f "$pfxPath" /p "$env:SIGN_CERT_PASSWORD" `
+              /tr http://timestamp.digicert.com /td SHA256 "$target"
+            if ($LASTEXITCODE -ne 0) { Write-Error "Signing $target failed (exit code $LASTEXITCODE)."; exit 1 }
+          }
+
+          Write-Host "OK: Haptic Actuator .sys and .cat signed."
+        }
+        finally {
+          if (Test-Path $pfxPath) {
+            Remove-Item -Path $pfxPath -Force
+          }
+        }
+      shell: pwsh
+      env:
+        SIGN_CERT_PFX: ${{ secrets.CERT }}
+        SIGN_CERT_PASSWORD: ${{ secrets.CERT_PWD }}
+
+    # =====================================================================
     # GUI: .NET SDK, restore, дві публікації (framework-dependent і
     # self-contained). Драйвер уже зібраний і підписаний вище в цьому ж
     # job, тому WDK/MSBuild-тулчейн і .NET SDK просто співіснують на одному
@@ -349,7 +459,7 @@ jobs:
 
     # =====================================================================
     # Формуємо однакову структуру WellspringPTP/Driver + WellspringPTP/Gui
-    # для обох варіантів. upload-artifact нижче заархівує кожну з цих
+    # (+ WellspringPTP/HapticDriver, експериментальний) для обох варіантів. upload-artifact нижче заархівує кожну з цих
     # папок РІВНО ОДИН РАЗ - без ручного zip, тому нема архіву-в-архіві.
     # =====================================================================
     - name: Stage folder structure (WellspringPTP/Driver + WellspringPTP/Gui)
@@ -360,9 +470,14 @@ jobs:
         New-Item -ItemType Directory -Path "stage/min/WellspringPTP/Gui"     -Force | Out-Null
         New-Item -ItemType Directory -Path "stage/full/WellspringPTP/Driver" -Force | Out-Null
         New-Item -ItemType Directory -Path "stage/full/WellspringPTP/Gui"    -Force | Out-Null
+        New-Item -ItemType Directory -Path "stage/min/WellspringPTP/HapticDriver"  -Force | Out-Null
+        New-Item -ItemType Directory -Path "stage/full/WellspringPTP/HapticDriver" -Force | Out-Null
 
         Copy-Item -Path "artifacts/driver/*"   -Destination "stage/min/WellspringPTP/Driver"  -Recurse -Force
         Copy-Item -Path "artifacts/driver/*"   -Destination "stage/full/WellspringPTP/Driver" -Recurse -Force
+
+        Copy-Item -Path "artifacts/haptic-driver/*" -Destination "stage/min/WellspringPTP/HapticDriver"  -Recurse -Force
+        Copy-Item -Path "artifacts/haptic-driver/*" -Destination "stage/full/WellspringPTP/HapticDriver" -Recurse -Force
 
         Copy-Item -Path "artifacts/gui-min/*"  -Destination "stage/min/WellspringPTP/Gui"  -Recurse -Force
         Copy-Item -Path "artifacts/gui-full/*" -Destination "stage/full/WellspringPTP/Gui" -Recurse -Force

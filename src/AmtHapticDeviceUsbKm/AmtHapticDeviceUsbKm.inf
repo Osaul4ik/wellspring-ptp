@@ -1,0 +1,77 @@
+; DriverVer below is a placeholder - the CI workflow rewrites this line
+; automatically at build time (StampInf), together with $ARCH$ and
+; $KMDFVERSION$.
+;
+; Haptic actuator function driver for one interface of the Apple T2 trackpad's
+; composite USB device. It is NOT part of the touchpad driver and never binds to
+; the composite parent or to the touchpad's own interface (MI_02).
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49f0-BC3D-A4FF138216D6}
+Provider    = %ManufacturerName%
+CatalogFile = AmtHapticDeviceUsbKm.cat
+DriverVer   = 01/01/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+AmtHaptic_Drivers_Dir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+AmtHapticDeviceUsbKm.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+; Actuator interface (MI_03) of the T2 trackpad. One line per model that is
+; CONFIRMED to expose the actuator there; AmtHapticIsSupportedDevice() in
+; Actuator.c must list the same product IDs.
+%AmtHaptic.DeviceDesc% = AmtHaptic_Device, USB\Vid_05ac&Pid_0340&MI_03
+
+[AmtHaptic_Drivers_Dir]
+AmtHapticDeviceUsbKm.sys
+
+; -------------- AmtHapticDeviceUsbKm device install --------------
+
+[AmtHaptic_Device.NT]
+CopyFiles = AmtHaptic_Drivers_Dir
+
+[AmtHaptic_Device.NT.HW]
+AddReg = AmtHaptic_AddReg
+
+[AmtHaptic_AddReg]
+; Runtime debug-trace switch (see Trace.h/Trace.c). 0 = off (shipped default).
+; Flip to 1 (regedit, this device's "Device Parameters" key) to enable
+; "[AmtHaptic] ..." DbgPrintEx output.
+HKR,,"DebugMode",0x00010003,0
+
+[AmtHaptic_Device.NT.Services]
+; This is the function driver of the interface, so it carries
+; SPSVCINST_ASSOCSERVICE (unlike the touchpad driver, which is a lower filter).
+AddService = AmtHapticDeviceUsbKm, %SPSVCINST_ASSOCSERVICE%, AmtHaptic_Service_Inst
+
+[AmtHaptic_Service_Inst]
+DisplayName   = %AmtHaptic.SVCDESC%
+ServiceType   = 1               ; SERVICE_KERNEL_DRIVER
+StartType     = 3               ; SERVICE_DEMAND_START
+ErrorControl  = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\AmtHapticDeviceUsbKm.sys
+
+[AmtHaptic_Device.NT.Wdf]
+KmdfService = AmtHapticDeviceUsbKm, AmtHaptic_wdfsect
+
+[AmtHaptic_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE  = 0x00000002
+ManufacturerName        = "Osaul4ik"
+DiskName                = "WellspringPTP Installation Disk"
+AmtHaptic.DeviceDesc    = "Wellspring Haptic Actuator"
+AmtHaptic.SVCDESC       = "Wellspring Haptic Actuator Service"

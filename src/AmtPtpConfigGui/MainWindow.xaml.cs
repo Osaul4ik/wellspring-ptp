@@ -214,6 +214,7 @@ namespace AmtPtpConfigGui
             ChkPalmEdgeRejection.IsChecked = _appSettings.PalmEdgeRejectionEnabled;
             _appSettings.Theme = ThemeManager.Get(_appSettings.Theme).Id;
             ThemeManager.Apply(_appSettings.Theme, Resources);
+            _haptics = new HapticsEngine(_device);
             InitializeProfiles();
             UpdateProModeVisibility();
             _uiReady = true;
@@ -236,6 +237,7 @@ namespace AmtPtpConfigGui
                 Interval = TimeSpan.FromMilliseconds(42)
             };
             _liveRenderTimer.Tick += LiveRenderTimer_Tick;
+            _hapticsTimer.Tick += HapticsTimer_Tick;
 
             Loaded += (_, _) =>
             {
@@ -633,6 +635,7 @@ namespace AmtPtpConfigGui
                     active.Palm = ReadConfigFromSliders();
                     active.Pointer = ReadPointerConfigFromControls();
                     active.Scroll = ReadScrollConfigFromControls();
+                    active.Haptics = ReadHapticsFromControls();
                 }
 
                 var backup = new WellspringBackup
@@ -686,6 +689,7 @@ namespace AmtPtpConfigGui
                     profile.Palm = profile.Palm.StructVersion == 0 ? PalmConfig.Default : profile.Palm.Clamped();
                     profile.Pointer = NormalizePointerConfig(profile.Pointer);
                     profile.Scroll = profile.Scroll.StructVersion == 0 ? ScrollConfig.Default : profile.Scroll.Clamped();
+                    profile.Haptics = (profile.Haptics ?? HapticsConfig.Default).Clamped();
                 }
 
                 _profilesReady = false;
@@ -715,6 +719,8 @@ namespace AmtPtpConfigGui
                     LoadConfigIntoSliders(active.Palm);
                     LoadPointerConfigIntoControls(active.Pointer);
                     LoadScrollConfigIntoControls(active.Scroll);
+                    LoadHapticsIntoControls(active.Haptics);
+                    _haptics.Configure(active.Haptics);
                     DrawPreview();
                 }
 
@@ -812,7 +818,8 @@ namespace AmtPtpConfigGui
                 Name = source.Name,
                 Palm = source.Palm,
                 Pointer = source.Pointer,
-                Scroll = source.Scroll
+                Scroll = source.Scroll,
+                Haptics = (source.Haptics ?? HapticsConfig.Default).Clamped()
             };
         }
 
@@ -1400,6 +1407,9 @@ namespace AmtPtpConfigGui
                 ProfileCombo.SelectedIndex = 0;
             }
             _profilesReady = true;
+
+            // The saved profile decides what the engine does from the start.
+            _haptics.Configure(ActiveProfile?.Haptics ?? HapticsConfig.Default);
         }
 
         private GuiProfile? ActiveProfile =>
@@ -1417,6 +1427,7 @@ namespace AmtPtpConfigGui
             LoadConfigIntoSliders(profile.Palm.Clamped());
             LoadPointerConfigIntoControls(profile.Pointer.Clamped());
             LoadScrollConfigIntoControls(profile.Scroll.StructVersion == 0 ? ScrollConfig.Default : profile.Scroll.Clamped());
+            LoadHapticsIntoControls(profile.Haptics);
             DrawPreview();
             SetBottomStatus($"Loaded profile “{profile.Name}”. Click “Save” to apply it to the driver.");
         }
@@ -1504,6 +1515,7 @@ namespace AmtPtpConfigGui
                 LoadConfigIntoSliders(current.Palm.Clamped());
                 LoadPointerConfigIntoControls(current.Pointer.Clamped());
                 LoadScrollConfigIntoControls(current.Scroll.StructVersion == 0 ? ScrollConfig.Default : current.Scroll.Clamped());
+                LoadHapticsIntoControls(current.Haptics);
                 DrawPreview();
             }
             SetBottomStatus("Profile deleted.");
@@ -1581,6 +1593,9 @@ namespace AmtPtpConfigGui
                 ForceTouchEmulationGroup.Visibility = _forceTouchSupported ? Visibility.Collapsed : Visibility.Visible;
             if (SmallContactRejectionGroup != null)
                 SmallContactRejectionGroup.Visibility = _forceTouchSupported ? Visibility.Collapsed : Visibility.Visible;
+            // Haptics are pressure-triggered: pointless without a pressure sensor.
+            if (HapticsGroup != null)
+                HapticsGroup.Visibility = _forceTouchSupported ? Visibility.Visible : Visibility.Collapsed;
 
             // The tray context menu is rebuilt on demand from RefreshTrayMenu,
             // but if it's already open/cached it should reflect the change
@@ -2351,6 +2366,106 @@ namespace AmtPtpConfigGui
 
         // ---------------------------------------------------------------
         // Pointer tab <-> PointerConfig plumbing
+        // ------------------------------------------------------------------
+        // Pressure haptics (second click on a firm press)
+        //
+        // The settings are part of the profile and are applied by the same
+        // "Save" as everything else. The engine itself runs inside this app
+        // (HapticsEngine) and keeps working while the window is hidden in the
+        // tray. The 200 ms timer below only feeds the live pressure meter and
+        // the status line, and runs only while the Haptics group is actually
+        // visible (Pointer tab selected, window not hidden to the tray).
+        // ------------------------------------------------------------------
+        private readonly HapticsEngine _haptics;
+
+        private readonly DispatcherTimer _hapticsTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(200)
+        };
+
+        private HapticsConfig ReadHapticsFromControls()
+        {
+            return new HapticsConfig
+            {
+                Enabled = ChkHapticsEnabled.IsChecked == true,
+                Threshold = (int)Math.Round(SlHapticsThreshold.Value),
+                Waveform = Math.Max(CmbHapticsWaveform.SelectedIndex, 0),
+            }.Clamped();
+        }
+
+        private void LoadHapticsIntoControls(HapticsConfig? config)
+        {
+            var cfg = (config ?? HapticsConfig.Default).Clamped();
+            ChkHapticsEnabled.IsChecked = cfg.Enabled;
+            SlHapticsThreshold.Value = cfg.Threshold;
+            CmbHapticsWaveform.SelectedIndex = cfg.Waveform;
+            UpdateHapticsLabels();
+        }
+
+        private void HapticsSlider_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateHapticsLabels();
+        }
+
+        private void UpdateHapticsLabels()
+        {
+            // Null while InitializeComponent is still building the tree and
+            // the slider raises its first ValueChanged.
+            if (LblHapticsThreshold == null || SlHapticsThreshold == null)
+                return;
+
+            int threshold = (int)Math.Round(SlHapticsThreshold.Value);
+
+            // The engine re-arms below 70% of the threshold (HapticsLatch).
+            LblHapticsThreshold.Text = $"{threshold} · release at {threshold * 7 / 10}";
+        }
+
+        private void HapticsGroup_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            if (!HapticsGroup.IsVisible)
+            {
+                _hapticsTimer.Stop();
+                return;
+            }
+
+            _hapticsTimer.Start();
+            RefreshHapticsStatus();
+        }
+
+        private void HapticsTimer_Tick(object? sender, EventArgs e)
+        {
+            RefreshHapticsStatus();
+        }
+
+        private void RefreshHapticsStatus()
+        {
+            HapticsStatus status = _haptics.Status;
+            bool running = status.State == HapticsState.Running;
+
+            PbHapticsPressure.Value = Math.Min(status.Pressure, PbHapticsPressure.Maximum);
+            LblHapticsPressure.Text = running ? $"{status.Pressure} · {status.Clicks} clicks" : "—";
+            LblHapticsStatus.Text = status.State switch
+            {
+                HapticsState.Running => "Active · second click is on",
+                HapticsState.Disabled => "Off · enable it above and press Save.",
+                HapticsState.DriverUnavailable => "Waiting for the Wellspring driver (not connected).",
+                HapticsState.ActuatorUnavailable => "The Wellspring haptic actuator driver is not installed or not ready. Clicks are skipped until it appears.",
+                HapticsState.FeedUnavailable => "Waiting for pressure data from the Wellspring driver.",
+                _ => string.Empty,
+            };
+        }
+
+        private async void HapticsTest_Click(object sender, RoutedEventArgs e)
+        {
+            // Plays the waveform selected right now, saved or not, so it can
+            // be judged before pressing Save. Off the UI thread: the actuator
+            // transfer can block for up to its timeout.
+            int waveform = ReadHapticsFromControls().Waveform;
+            bool ok = await Task.Run(() => _haptics.TestClick(waveform));
+            if (!ok)
+                SetBottomStatus("Haptic test failed: the Wellspring haptic actuator driver is not installed or not ready.");
+        }
+
         private bool _suppressPointerEvents;
 
         private void LoadPointerConfigIntoControls(PointerConfig cfg)
@@ -2837,6 +2952,7 @@ namespace AmtPtpConfigGui
             }
             var requestedPointer = ReadPointerConfigFromControls();
             var requestedScroll = ReadScrollConfigFromControls();
+            var requestedHaptics = ReadHapticsFromControls();
 
             bool palmOk = false, pointerOk = false, scrollOk = false;
             if (_device.IsConnected)
@@ -2883,8 +2999,12 @@ namespace AmtPtpConfigGui
                 profile.Palm = savedPalm.Clamped();
                 profile.Pointer = requestedPointer.Clamped();
                 profile.Scroll = requestedScroll.StructVersion == 0 ? ScrollConfig.Default : requestedScroll.Clamped();
+                profile.Haptics = requestedHaptics;
                 TrySaveProfiles();
             }
+
+            // Not driver configuration: applies to the in-app haptics engine.
+            _haptics.Configure(requestedHaptics);
 
             if (!_device.IsConnected)
             {
@@ -2949,8 +3069,12 @@ namespace AmtPtpConfigGui
             bool scrollOk = _device.IsConnected && _device.TryResetScrollConfig(out appliedScroll);
             LoadScrollConfigIntoControls(scrollOk ? appliedScroll : ScrollConfig.Default);
 
+            var defaultHaptics = HapticsConfig.Default;
+            LoadHapticsIntoControls(defaultHaptics);
+            _haptics.Configure(defaultHaptics);
+
             if (palmOk && pointerOk && scrollOk)
-                SetBottomStatus("Reset to defaults (Palm + Scroll + Pointer).");
+                SetBottomStatus("Reset to defaults (Palm + Scroll + Pointer + Haptics).");
             else if (_device.IsConnected)
                 SetBottomStatus("Could not fully reset driver settings — showing defaults.");
             else
@@ -2963,6 +3087,7 @@ namespace AmtPtpConfigGui
                 active.Palm = ReadConfigFromSliders();
                 active.Pointer = ReadPointerConfigFromControls();
                 active.Scroll = ReadScrollConfigFromControls();
+                active.Haptics = ReadHapticsFromControls();
                 TrySaveProfiles();
             }
         }
@@ -2979,11 +3104,12 @@ namespace AmtPtpConfigGui
             var profile = AmtPtpProfile.FromCurrent(
                 ReadConfigFromSliders(),
                 ReadPointerConfigFromControls(),
-                ReadScrollConfigFromControls());
+                ReadScrollConfigFromControls(),
+                ReadHapticsFromControls());
 
             var json = JsonSerializer.Serialize(profile, JsonOptions);
             File.WriteAllText(dlg.FileName, json);
-            SetBottomStatus($"Profile (Palm + Scroll + Pointer) saved: {dlg.FileName}");
+            SetBottomStatus($"Profile (Palm + Scroll + Pointer + Haptics) saved: {dlg.FileName}");
         }
 
         private void LoadProfile_Click(object sender, RoutedEventArgs e)
@@ -3016,8 +3142,12 @@ namespace AmtPtpConfigGui
                     LoadConfigIntoSliders(profile.Palm.StructVersion == 0 ? PalmConfig.Default : profile.Palm.Clamped());
                     LoadPointerConfigIntoControls(NormalizePointerConfig(profile.Pointer));
                     LoadScrollConfigIntoControls(profile.Scroll.StructVersion == 0 ? ScrollConfig.Default : profile.Scroll.Clamped());
+                    // Files written before haptics existed carry no haptic
+                    // settings: keep the current ones rather than reset them.
+                    if (profile.Haptics != null)
+                        LoadHapticsIntoControls(profile.Haptics);
                     DrawPreview();
-                    SetBottomStatus($"Profile (Palm + Scroll + Pointer) loaded: {dlg.FileName}. Click “Save” to write it to the driver.");
+                    SetBottomStatus($"Profile (Palm + Scroll + Pointer + Haptics) loaded: {dlg.FileName}. Click “Save” to write it to the driver.");
                 }
                 else
                 {
@@ -3084,6 +3214,10 @@ namespace AmtPtpConfigGui
             }
             StopLivePolling();
             _liveRenderTimer.Stop();
+            _hapticsTimer.Stop();
+            // Before the device handle goes away: the engine releases its
+            // share of the live stream on the way out.
+            _haptics.Dispose();
             _device.Dispose();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();

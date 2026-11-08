@@ -13,6 +13,10 @@ namespace AmtPtpConfigGui
         public Native.PointerConfig Pointer { get; set; }
         public Native.ScrollConfig Scroll { get; set; }
 
+        // Profiles saved before haptics existed have no "Haptics" entry, so
+        // the initializer is what they deserialize to.
+        public Native.HapticsConfig Haptics { get; set; } = Native.HapticsConfig.Default;
+
         public override string ToString() => Name;
     }
 
@@ -138,6 +142,7 @@ namespace AmtPtpConfigGui
                 Palm = Native.PalmConfig.Default,
                 Pointer = Native.PointerConfig.Default,
                 Scroll = Native.ScrollConfig.Default,
+                Haptics = Native.HapticsConfig.Default,
             };
         }
 
@@ -248,6 +253,7 @@ namespace AmtPtpConfigGui
                     p.Scroll = old;
                 }
                 p.Scroll = p.Scroll.StructVersion == 0 ? Native.ScrollConfig.Default : p.Scroll.Clamped();
+                p.Haptics = (p.Haptics ?? Native.HapticsConfig.Default).Clamped();
             }
         }
     }

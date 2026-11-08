@@ -202,6 +202,7 @@ namespace AmtPtpConfigGui.Native
                 }
 
                 _handle = handle;
+                _liveOnDriver = false;
                 _liveFrameBufferSize = liveFrameSize;
                 _liveFrameBuffer = liveFrameBuffer;
                 return true;
@@ -220,6 +221,7 @@ namespace AmtPtpConfigGui.Native
         {
             _handle?.Dispose();
             _handle = null;
+            _liveOnDriver = false;
 
             if (_liveFrameBuffer != IntPtr.Zero)
             {
@@ -657,19 +659,59 @@ namespace AmtPtpConfigGui.Native
             }
         }
 
-        public bool SetLiveEnabled(bool enabled)
+        /// <summary>
+        /// Who wants the driver's live frame stream. The driver gives the
+        /// stream to one owner per handle, so the Live view and the haptics
+        /// engine share it through a consumer mask instead of toggling it
+        /// independently (which would let either one switch it off under
+        /// the other).
+        /// </summary>
+        public enum LiveConsumer
+        {
+            View = 1,
+            Haptics = 2,
+        }
+
+        // Bitmask of LiveConsumer values that currently want the stream, and
+        // what the driver was last told on the current handle (null = not
+        // known, e.g. after a failed frame read, so the next change is always
+        // sent). Both guarded by _ioLock.
+        private int _liveConsumers;
+        private bool? _liveOnDriver = false;
+
+        /// <summary>The Live view's switch (see SetLiveConsumer).</summary>
+        public bool SetLiveEnabled(bool enabled) =>
+            SetLiveConsumer(LiveConsumer.View, enabled);
+
+        /// <summary>
+        /// Registers or drops one consumer. The driver is only told when the
+        /// overall wish changes: first consumer on, last consumer off.
+        /// Re-asserting an unchanged wish is a cheap no-op, except when the
+        /// driver's state is unknown (a frame read failed), when it is re-sent.
+        /// </summary>
+        public bool SetLiveConsumer(LiveConsumer consumer, bool enabled)
         {
             lock (_ioLock)
             {
+                int mask = (int)consumer;
+                _liveConsumers = enabled ? (_liveConsumers | mask) : (_liveConsumers & ~mask);
+
                 if (_handle == null || _handle.IsInvalid)
+                {
+                    _liveOnDriver = false;
                     return false;
+                }
+
+                bool want = _liveConsumers != 0;
+                if (want == _liveOnDriver)
+                    return true;
 
                 IntPtr inBuf = Marshal.AllocHGlobal(sizeof(int));
                 try
                 {
-                    Marshal.WriteInt32(inBuf, enabled ? 1 : 0);
+                    Marshal.WriteInt32(inBuf, want ? 1 : 0);
 
-                    return DeviceIoControl(
+                    bool ok = DeviceIoControl(
                         _handle,
                         IoctlSetLiveEnabled,
                         inBuf,
@@ -678,6 +720,10 @@ namespace AmtPtpConfigGui.Native
                         0,
                         out _,
                         IntPtr.Zero);
+
+                    if (ok)
+                        _liveOnDriver = want;
+                    return ok;
                 }
                 finally
                 {
@@ -769,7 +815,13 @@ namespace AmtPtpConfigGui.Native
                     IntPtr.Zero);
 
                 if (!ok || bytesReturned < (uint)_liveFrameBufferSize)
+                {
+                    // The driver may no longer be streaming for this handle;
+                    // make the next SetLiveConsumer re-send (on or off)
+                    // instead of trusting a stale answer.
+                    _liveOnDriver = null;
                     return false;
+                }
 
                 frame = Marshal.PtrToStructure<LiveFrame>(_liveFrameBuffer);
                 return frame.StructVersion == 3;

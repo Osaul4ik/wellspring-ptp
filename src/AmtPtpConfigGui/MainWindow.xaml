@@ -1466,6 +1466,41 @@
                                 </StackPanel>
                             </GroupBox>
 
+                            <GroupBox x:Name="HapticsGroup" Margin="0,12,0,0" IsVisibleChanged="HapticsGroup_IsVisibleChanged">
+                                <GroupBox.Header>
+                                    <StackPanel>
+                                        <TextBlock Text="Haptics" Style="{StaticResource SectionTitle}"/>
+                                        <TextBlock Text="PRESSURE · second click on a firm press" Style="{StaticResource SectionCaption}"/>
+                                    </StackPanel>
+                                </GroupBox.Header>
+                                <StackPanel>
+                                    <CheckBox x:Name="ChkHapticsEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,0,0,4" Content="Enable second haptic click" ToolTip="After the physical click, pressing harder fires a second haptic click. Uses the trackpad's real pressure sensor."/>
+                                    <Grid Style="{StaticResource SettingRow}"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Pressure needed" ToolTip="Raw pressure that triggers the second click. Lower is lighter, higher is firmer. The scale is device-specific; use the live meter below to pick a value."/>
+                                        <TextBlock x:Name="LblHapticsThreshold" Grid.Column="1" Style="{StaticResource SliderValue}"/>
+                                    </Grid>
+                                    <Slider x:Name="SlHapticsThreshold" Minimum="50" Maximum="1000" SmallChange="5" LargeChange="25" IsSnapToTickEnabled="True" TickFrequency="5" ValueChanged="HapticsSlider_Changed"/>
+                                    <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Live pressure" ToolTip="Current pressure of a single finger, from the helper. Press as hard as you want the second click to need."/>
+                                        <TextBlock x:Name="LblHapticsPressure" Grid.Column="1" Style="{StaticResource SliderValue}" Text="—"/>
+                                    </Grid>
+                                    <ProgressBar x:Name="PbHapticsPressure" Minimum="0" Maximum="1000" Height="8" Margin="0,4,0,0"
+                                                 Foreground="{DynamicResource AccentBrush}"
+                                                 Background="{DynamicResource ControlFillBrush}"
+                                                 BorderBrush="{DynamicResource ControlStrokeBrush}"/>
+                                    <Grid Style="{StaticResource SettingRow}" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Click waveform" ToolTip="Light and firm are captured actuator waveforms; they may feel alike on some units."/>
+                                        <ComboBox x:Name="CmbHapticsWaveform" Grid.Column="1" Width="120" SelectedIndex="1">
+                                            <ComboBoxItem Content="Light"/>
+                                            <ComboBoxItem Content="Firm"/>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Button Content="Test click" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Height="36" Padding="14,0" Margin="0,12,0,0" Click="HapticsTest_Click" ToolTip="Fire the selected waveform once, without pressing."/>
+                                    <TextBlock x:Name="LblHapticsStatus" Style="{StaticResource HintText}" Text="Checking haptics…"/>
+                                    <TextBlock Style="{StaticResource HintText}" Text="Haptic settings are part of the profile and are applied with “Save”. The second click works while this window is hidden in the tray, but not after the app is closed. It needs the Wellspring haptic actuator driver. To get only the haptic feedback, turn off “Force Touch action”."/>
+                                </StackPanel>
+                            </GroupBox>
+
                             <GroupBox x:Name="ForceTouchSmallContactRejectionGroup" Margin="0,12,0,0">
                                 <GroupBox.Header>
                                     <StackPanel>
