@@ -46,6 +46,13 @@ CopyFiles = AmtHaptic_Drivers_Dir
 AddReg = AmtHaptic_AddReg
 
 [AmtHaptic_AddReg]
+; Who may open the device (applied to opens of the device interface via
+; FILE_DEVICE_SECURE_OPEN, see Device.c): administrators and SYSTEM full
+; access, other signed-in users read/write only. That is what lets an
+; unelevated control panel fire a click, and no more than that - the only
+; thing this device can do is play a fixed haptic waveform.
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+
 ; Runtime debug-trace switch (see Trace.h/Trace.c). 0 = off (shipped default).
 ; Flip to 1 (regedit, this device's "Device Parameters" key) to enable
 ; "[AmtHaptic] ..." DbgPrintEx output.

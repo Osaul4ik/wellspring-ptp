@@ -21,13 +21,6 @@ AmtHapticCreateDevice(
     PDEVICE_CONTEXT              context;
     NTSTATUS                     status;
 
-    // Opens of the device interface are access-checked against these, not
-    // against whatever the PDO's INF or class says: administrators and SYSTEM
-    // full access, other signed-in users read/write only. That is what lets an
-    // unelevated control panel fire a click, and no more than that - the only
-    // thing this device can do is play a fixed haptic waveform.
-    DECLARE_CONST_UNICODE_STRING(sddl, L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)");
-
     PAGED_CODE();
 
     // This driver is the function driver for its interface (a filter would not
@@ -39,13 +32,15 @@ AmtHapticCreateDevice(
     //
     // No WdfDeviceInitSetDeviceType: an FDO takes the device type of the device
     // below it, and overriding that is for PDOs and control devices.
+    //
+    // No WdfDeviceInitAssignSDDLString either: that is for control devices and
+    // PDOs, and on an FDO the device fails to start (Code 31,
+    // STATUS_INVALID_SECURITY_DESCR). Who may open this device is set by the
+    // INF ("Security" under the device's hardware key, see
+    // AmtHapticDeviceUsbKm.inf); FILE_DEVICE_SECURE_OPEN makes that descriptor
+    // apply to opens of the device interface too, not only to opens by name.
     WdfDeviceInitSetCharacteristics(DeviceInit, FILE_DEVICE_SECURE_OPEN, TRUE);
     WdfDeviceInitSetExclusive(DeviceInit, FALSE);
-
-    status = WdfDeviceInitAssignSDDLString(DeviceInit, &sddl);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
 
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
     pnpCallbacks.EvtDevicePrepareHardware = AmtHapticEvtDevicePrepareHardware;

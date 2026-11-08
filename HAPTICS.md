@@ -77,9 +77,11 @@ The driver is organised like the touchpad driver (`Driver`, `Device`, `Queue`,
 - **Power and removal**: no idle power management (the first click after an idle
   suspend would pay resume latency). `EvtIoStop` cancels an in-flight transfer on
   removal and lets it finish across a suspend.
-- **Access**: opens are checked against the SDDL set in `Device.c`: administrators
-  and SYSTEM full access, other signed-in users read/write. That lets an
-  unelevated Control Center fire a click, and no more than that.
+- **Access**: set by the INF (`Security` under the device's hardware key; an FDO
+  must not call `WdfDeviceInitAssignSDDLString`, which fails the start with
+  Code 31) and applied to the device interface by `FILE_DEVICE_SECURE_OPEN`:
+  administrators and SYSTEM full access, other signed-in users read/write. That
+  lets an unelevated Control Center fire a click, and no more than that.
 - **Diagnostics**: `GET_INFO` reports delivered/throttled/failed click counters
   and the last transfer status. Set `DebugMode` (REG_DWORD, 1) under the device's
   `Device Parameters` key to get `[AmtHaptic] ...` lines in DebugView.
