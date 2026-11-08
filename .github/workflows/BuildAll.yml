@@ -319,14 +319,13 @@ jobs:
     # =====================================================================
     - name: Build Haptic Actuator Driver
       run: |
-        # OutDir/IntDir задаємо явно: у цього проєкту немає власної схеми
-        # вихідних тек, а MSBuild сам додає завершальний слеш.
+        # Вихідні теки задає сам vcxproj (build\<ім'я>\<платформа>\<конфігурація>,
+        # як в основного драйвера): перевизначення OutDir/IntDir з командного
+        # рядка ламає /Fo для кількох .c файлів (D8036).
         msbuild "$env:HAPTIC_PROJECT_DIR\$env:HAPTIC_DRIVER_NAME.vcxproj" `
           /p:Configuration=$env:CONFIGURATION `
           /p:Platform=$env:PLATFORM `
           /p:WindowsTargetPlatformVersion=10.0.26100.0 `
-          "/p:OutDir=$env:GITHUB_WORKSPACE\artifacts\haptic-build" `
-          "/p:IntDir=$env:GITHUB_WORKSPACE\artifacts\haptic-obj" `
           /nologo /verbosity:minimal /clp:Summary
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       shell: pwsh
@@ -335,8 +334,9 @@ jobs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        $sysPath    = "artifacts\haptic-build\$env:HAPTIC_DRIVER_NAME.sys"
-        $pdbPath    = "artifacts\haptic-build\$env:HAPTIC_DRIVER_NAME.pdb"
+        $buildOutDir = "$env:HAPTIC_PROJECT_DIR\build\$env:HAPTIC_DRIVER_NAME\$env:PLATFORM\$env:CONFIGURATION"
+        $sysPath    = "$buildOutDir\$env:HAPTIC_DRIVER_NAME.sys"
+        $pdbPath    = "$buildOutDir\$env:HAPTIC_DRIVER_NAME.pdb"
         $infSrcPath = "$env:HAPTIC_PROJECT_DIR\$env:HAPTIC_DRIVER_NAME.inf"
         $packageDir = "artifacts\haptic-driver"
 
