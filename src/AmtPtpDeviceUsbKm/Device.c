@@ -1067,6 +1067,10 @@ AmtPtpDeviceUsbKmCreateDevice(_Inout_ PWDFDEVICE_INIT DeviceInit)
         return status;
     }
 
+    // Link to the haptic actuator driver, so the touchpad driver can play the
+    // second haptic click itself. Best-effort: the touchpad works without it.
+    (VOID)AmtHapticLinkStart(device, deviceContext);
+
     status = AmtPtpDeviceUsbKmQueueInitialize(device);
     if (!NT_SUCCESS(status)) {
         AmtTrace(deviceContext, "CreateDevice: QueueInitialize FAILED, status=0x%08X", status);
@@ -1968,6 +1972,11 @@ AmtPtpEvtDeviceContextCleanup(
     PAGED_CODE();
 
     pDeviceContext = DeviceGetContext(fdo);
+
+    // Stop the haptic actuator link first: its notification callback and
+    // I/O target use this context and must be gone before anything else is
+    // torn down.
+    AmtHapticLinkStop(pDeviceContext);
 
     // The control device (DRIVER_CONTEXT::ConfigControlDevice) is
     // driver-lifetime, not FDO-lifetime - see AmtPtpAcquireConfigControlDevice

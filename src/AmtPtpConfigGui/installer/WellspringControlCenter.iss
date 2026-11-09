@@ -10,6 +10,10 @@
 ;       3) Driver only
 ;     Only shown when the build actually embeds a driver (see IncludeDriver
 ;     below) - a GUI-only build behaves exactly like before, no page shown.
+;   - When the build also embeds the haptic actuator driver (see
+;     IncludeHaptic below), it is installed together with the touchpad
+;     driver (same Test Mode / certificate / reboot flow) and removed
+;     together with it on uninstall.
 ;   - Installs the GUI to {autopf}\WellspringControlCenter (Program Files)
 ;   - Registers an entry in "Programs and Features" (Inno Setup does this
 ;     automatically: HKLM\...\Uninstall\{AppId}_is1)
@@ -111,6 +115,16 @@
   #ifndef DriverName
     #define DriverName "AmtPtpDeviceUsbKm"
   #endif
+  ; Optional haptic actuator driver package (.sys/.inf/.cat, signed with the
+  ; same certificate as the touchpad driver, so no extra .cer): staged by
+  ; BuildAll.yml as stage\min\WellspringPTP\HapticDriver and passed with
+  ; /DHapticDriverSourceDir=... . Left undefined -> touchpad driver only.
+  #ifdef HapticDriverSourceDir
+    #define IncludeHaptic
+    #ifndef HapticDriverName
+      #define HapticDriverName "AmtHapticDeviceUsbKm"
+    #endif
+  #endif
 #endif
 
 #define MyAppName "Wellspring Control Center"
@@ -171,6 +185,11 @@ Source: "{#DriverSourceDir}\{#DriverName}.sys"; DestDir: "{tmp}"; Flags: dontcop
 Source: "{#DriverSourceDir}\{#DriverName}.inf"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallDriver
 Source: "{#DriverSourceDir}\{#DriverName}.cat"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallDriver
 Source: "{#DriverSourceDir}\{#DriverName}.cer"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallDriver
+#ifdef IncludeHaptic
+Source: "{#HapticDriverSourceDir}\{#HapticDriverName}.sys"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallDriver
+Source: "{#HapticDriverSourceDir}\{#HapticDriverName}.inf"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallDriver
+Source: "{#HapticDriverSourceDir}\{#HapticDriverName}.cat"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallDriver
+#endif
 #endif
 
 [Dirs]
@@ -352,46 +371,39 @@ begin
   Result := True;
 end;
 
-// Finds every OLD published Driver Store package that originated from
-// our own AmtPtpDeviceUsbKm.inf (regardless of what "oemNN.inf" number
-// Windows assigned it) and removes it - both from the Driver Store and
-// from any device currently bound to it - before the new version is
-// installed. Without this, repeated installs just keep piling up
-// oemNN.inf copies of the same driver, and Windows is sometimes left
-// pointed at a stale one.
+// Removes every published Driver Store package that originated from the INF
+// named InfName (regardless of what "oemNN.inf" number Windows assigned it) -
+// both from the Driver Store and from any device currently bound to it.
+// Used before a (re)install, so repeated installs don't pile up oemNN.inf
+// copies of the same driver, and on uninstall. ListTag only names the temp
+// file the list is written to. ShowStatus must be False in the uninstaller
+// (there is no WizardForm there).
 //
 // We deliberately do NOT parse `pnputil /enum-drivers` text output - it
 // is localized (headers like "Original Name:" change with Windows'
 // display language), so matching against it is unreliable on non-English
 // systems. Get-WindowsDriver (DISM PowerShell module) exposes the same
 // data through the OriginalFileName .NET property, which is always in
-// English no matter the UI language.
-procedure RemoveOldDriverVersions;
+// English no matter the UI language. Without -All it only lists published
+// third-party (oemNN.inf) packages - exactly where our drivers appear - so
+// it doesn't enumerate thousands of inbox packages.
+procedure RemovePackagesByInf(const InfName, ListTag: String; ShowStatus: Boolean);
 var
   ResultCode: Integer;
   ListFile, PsCmd, Name: String;
   OldDrivers: TArrayOfString;
   I: Integer;
 begin
-  WizardForm.StatusLabel.Caption := 'Checking for previous driver versions...';
-  ListFile := ExpandConstant('{tmp}\wellspring_old_drivers.txt');
+  ListFile := ExpandConstant('{tmp}\wellspring_') + ListTag + '.txt';
   if FileExists(ListFile) then
     DeleteFile(ListFile);
 
   PsCmd := '-NoProfile -ExecutionPolicy Bypass -Command ' +
-    // BUG FIX: -All made Get-WindowsDriver enumerate every inbox
-    // Microsoft driver package too (thousands, on a machine with years
-    // of hardware history), on top of the third-party OEM packages -
-    // this is what made "checking for previous driver versions" take so
-    // long. Without -All, Get-WindowsDriver -Online only lists published
-    // third-party (oemNN.inf) packages, which is exactly the superset
-    // our own driver could ever appear in - the OriginalFileName filter
-    // below can never match an inbox driver anyway, so -All was pure
-    // wasted enumeration.
     '"Get-WindowsDriver -Online | ' +
-    'Where-Object { $_.OriginalFileName -like ''*{#DriverName}.inf'' } | ' +
+    'Where-Object { $_.OriginalFileName -like ''*' + InfName + ''' } | ' +
     'Select-Object -ExpandProperty Driver | ' +
     'Set-Content -Path ''' + ListFile + ''' -Encoding ascii"';
+  // Best-effort: if listing fails, there is nothing we can safely remove.
   if (not Exec('powershell.exe', PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode))
      or (ResultCode <> 0) or (not FileExists(ListFile)) then
     Exit;
@@ -404,15 +416,59 @@ begin
     Name := Trim(OldDrivers[I]);
     if Name = '' then
       Continue;
-    WizardForm.StatusLabel.Caption := 'Removing previous driver (' + Name + ')...';
+    if ShowStatus then
+      WizardForm.StatusLabel.Caption := 'Removing previous driver (' + Name + ')...';
     // /uninstall also detaches it from any device still using it;
     // /force suppresses the "in use" confirmation prompt. Ignore the
-    // result - if one old package can't be removed, move on and let the
-    // new /add-driver /install below take over anyway.
+    // result - if one old package can't be removed, move on.
     Exec(ExpandConstant('{sys}\pnputil.exe'), '/delete-driver ' + Name + ' /uninstall /force',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
+
+// Removes previous versions of the touchpad driver (and of the haptic
+// actuator driver, when this build ships it) before the new ones go in.
+procedure RemoveOldDriverVersions;
+begin
+  WizardForm.StatusLabel.Caption := 'Checking for previous driver versions...';
+  RemovePackagesByInf('{#DriverName}.inf', 'old_drivers', True);
+  #ifdef IncludeHaptic
+  RemovePackagesByInf('{#HapticDriverName}.inf', 'old_haptic_drivers', True);
+  #endif
+end;
+
+#ifdef IncludeHaptic
+// Installs the haptic actuator driver (separate package, signed with the
+// same certificate that was just imported for the touchpad driver). A failure
+// here is NOT fatal for the touchpad driver: the user just gets no haptic
+// click until it is installed.
+procedure InstallHapticDriverNow;
+var
+  ResultCode: Integer;
+  Inf: String;
+begin
+  Inf := ExpandConstant('{tmp}\{#HapticDriverName}.inf');
+  if not FileExists(Inf) then
+  begin
+    MsgBox('Haptic driver .inf not found: ' + Inf + #13#10 +
+      'The touchpad driver was installed, but haptic clicks will not work.',
+      mbError, MB_OK);
+    Exit;
+  end;
+
+  WizardForm.StatusLabel.Caption := 'Installing haptic actuator driver (pnputil)...';
+  if not Exec(ExpandConstant('{sys}\pnputil.exe'), '/add-driver "' + Inf + '" /install',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    MsgBox('Could not launch pnputil.exe for the haptic driver.', mbError, MB_OK)
+  else if (ResultCode <> 0) and (ResultCode <> 3010) then
+    MsgBox('pnputil reported an error installing the haptic driver (code ' +
+      IntToStr(ResultCode) + ').' + #13#10 +
+      'The touchpad driver was installed, but haptic clicks will not work.',
+      mbError, MB_OK)
+  else if ResultCode = 3010 then
+    RebootNeeded := True;
+end;
+#endif
 
 // Runs the driver install steps directly inside this (already-elevated)
 // setup.exe process - no separate script, no self-relaunch, no VBS.
@@ -504,6 +560,11 @@ begin
       RebootNeeded := True;
   end;
 
+  #ifdef IncludeHaptic
+  if Ok then
+    InstallHapticDriverNow;
+  #endif
+
   if Ok then
   begin
     // Best-effort nudge so PnP re-evaluates the device against the
@@ -538,6 +599,11 @@ begin
     ExtractTemporaryFile('{#DriverName}.inf');
     ExtractTemporaryFile('{#DriverName}.cat');
     ExtractTemporaryFile('{#DriverName}.cer');
+    #ifdef IncludeHaptic
+    ExtractTemporaryFile('{#HapticDriverName}.sys');
+    ExtractTemporaryFile('{#HapticDriverName}.inf');
+    ExtractTemporaryFile('{#HapticDriverName}.cat');
+    #endif
 
     if MsgBox(
       'Install the Wellspring PTP driver now?' + #13#10#13#10 +
@@ -545,7 +611,11 @@ begin
       '  1. Enable Windows Test Mode (testsigning) so the driver''s test' + #13#10 +
       '     certificate is trusted.' + #13#10 +
       '  2. Import that certificate into Trusted Root and Trusted Publishers.' + #13#10 +
+      #ifdef IncludeHaptic
+      '  3. Install the {#DriverName} and {#HapticDriverName} drivers (pnputil).' + #13#10 +
+      #else
       '  3. Install the {#DriverName} driver (pnputil).' + #13#10 +
+      #endif
       '  4. Automatically close Setup and restart the computer to finish.' + #13#10#13#10 +
       'Save any open work before continuing.',
       mbConfirmation, MB_YESNO) = IDYES then
@@ -696,48 +766,21 @@ end;
 
 #ifdef IncludeDriver
 
-// Removes every installed package originating from our own INF
-// (regardless of what "oemNN.inf" number Windows assigned it - same
-// Get-WindowsDriver matching approach used on install, see
-// RemoveOldDriverVersions above), then asks about Test Mode and rescans
-// devices so the touchpad doesn't sit dead until next boot.
+// Removes every installed package originating from our own INFs - the
+// haptic actuator driver first (when this build ships it), then the touchpad
+// driver (same Get-WindowsDriver matching approach as on install, see
+// RemovePackagesByInf above) - then asks about Test Mode and rescans devices
+// so the touchpad doesn't sit dead until next boot.
 procedure RemoveDriverNow;
 var
   ResultCode: Integer;
-  ListFile, PsCmd, Name: String;
-  OldDrivers: TArrayOfString;
-  I: Integer;
 begin
-  ListFile := ExpandConstant('{tmp}\wellspring_uninstall_drivers.txt');
-  if FileExists(ListFile) then
-    DeleteFile(ListFile);
-
-  PsCmd := '-NoProfile -ExecutionPolicy Bypass -Command ' +
-    // Same fix as RemoveOldDriverVersions above: -All pulls in every
-    // inbox Microsoft driver package too, which the OriginalFileName
-    // filter can never match - dropping it is a pure speed win with no
-    // change in what actually gets matched/removed.
-    '"Get-WindowsDriver -Online | ' +
-    'Where-Object { $_.OriginalFileName -like ''*{#DriverName}.inf'' } | ' +
-    'Select-Object -ExpandProperty Driver | ' +
-    'Set-Content -Path ''' + ListFile + ''' -Encoding ascii"';
-
-  // Best-effort: if this fails for any reason, fall through to the
-  // rescan anyway rather than leaving the touchpad in limbo.
-  if Exec('powershell.exe', PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-     and (ResultCode = 0) and FileExists(ListFile)
-     and LoadStringsFromFile(ListFile, OldDrivers) then
-  begin
-    for I := 0 to GetArrayLength(OldDrivers) - 1 do
-    begin
-      Name := Trim(OldDrivers[I]);
-      if Name <> '' then
-        // /uninstall also detaches it from any device still using it;
-        // /force suppresses the "in use" confirmation prompt.
-        Exec(ExpandConstant('{sys}\pnputil.exe'), '/delete-driver ' + Name + ' /uninstall /force',
-          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    end;
-  end;
+  // Best-effort: if listing/removal fails for any reason, fall through to
+  // the rescan anyway rather than leaving the touchpad in limbo.
+  #ifdef IncludeHaptic
+  RemovePackagesByInf('{#HapticDriverName}.inf', 'uninstall_haptic_drivers', False);
+  #endif
+  RemovePackagesByInf('{#DriverName}.inf', 'uninstall_drivers', False);
 
   // Relevant whenever the driver itself is being removed - ask whether
   // to also turn Test Mode back off.

@@ -13,7 +13,7 @@ WellspringPTP brings Windows Precision Touchpad gestures, Force Touch features, 
 - **Emulated Force Touch:** use a press-and-hold action on supported trackpads without hardware Force Touch.
 - **Better typing comfort:** adjustable palm rejection and accidental-touch protection.
 - **Personalize your trackpad:** tune pointer, scrolling, and click behavior; save profiles in Control Center.
-- **Smarter dragging:** adjustable drag-cancellation distance and Hard Tap hold time for both Force Touch modes.
+- **Smarter dragging:** adjustable drag-cancellation distance for both Force Touch modes.
 
 ## 💻 Compatibility
 
@@ -44,7 +44,7 @@ The installer handles the driver and its test certificate for you. **You don't n
 
 ## 🎛️ Make it yours
 
-Open **Wellspring Control Center** to adjust gestures, scrolling, palm rejection, and Force Touch. You can choose an action for Force Touch, set the emulation activation delay, and adjust **Hard Tap hold time** (300–3000 ms; 1300 ms by default).
+Open **Wellspring Control Center** to adjust gestures, scrolling, palm rejection, and Force Touch. You can choose an action for Force Touch, set the emulation activation delay, and tune **Pressure needed** and **Drag cancel distance**. On Force Touch trackpads, hold a hard tap without moving past the drag-cancel distance and press harder: the haptic click and the Force Tap action fire together, with no hold time. This runs in the driver, so it works without the app, and the settings are stored in the registry.
 
 A press that turns into a drag can start a regular held click. Once an emulated Force Touch action has triggered, that same press won't also trigger a timed Hard Tap.
 

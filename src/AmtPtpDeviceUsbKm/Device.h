@@ -546,6 +546,24 @@ typedef struct _DEVICE_CONTEXT
     WDFUSBINTERFACE        UsbInterface;
     USB_DEVICE_DESCRIPTOR  DeviceDescriptor;
 
+    // ---------------------------------------------------------------
+    // Link to the haptic actuator driver (HapticLink.c). Lets this driver
+    // play the second haptic click itself at the moment of a Force Tap, so
+    // it works without the Control Center. HapticLinkLock (a leaf spin lock,
+    // never held together with another lock of this struct) guards
+    // HapticTarget / HapticRequest / HapticMemory / HapticBuffer;
+    // HapticSendBusy is Interlocked (1 while HapticRequest is in flight).
+    // ---------------------------------------------------------------
+    WDFDEVICE       HapticParentDevice;
+    WDFSPINLOCK     HapticLinkLock;
+    WDFWORKITEM     HapticStartWorkItem;
+    PVOID           HapticNotifyEntry;   // IoRegisterPlugPlayNotification handle
+    WDFIOTARGET     HapticTarget;        // NULL until the actuator interface arrived
+    WDFREQUEST      HapticRequest;
+    WDFMEMORY       HapticMemory;
+    PVOID           HapticBuffer;        // PAMT_HAPTIC_CLICK_REQUEST inside HapticMemory
+    volatile LONG   HapticSendBusy;
+
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)

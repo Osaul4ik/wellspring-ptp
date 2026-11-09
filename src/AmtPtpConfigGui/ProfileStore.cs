@@ -228,8 +228,17 @@ namespace AmtPtpConfigGui
                         old.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
                     }
 
-                    if (p.Pointer.StructVersion < 13)
-                        old.ForceTouchHardTapHoldMs = defaults.ForceTouchHardTapHoldMs;
+                    // Version 13 → 14: the hard-tap hold time is gone and the
+                    // second haptic click moved into the driver. Carry the
+                    // profile's existing haptic on/off + waveform over, so
+                    // the driver keeps doing what the app did before.
+                    if (p.Pointer.StructVersion < 14)
+                    {
+                        var legacyHaptics = p.Haptics ?? Native.HapticsConfig.Default;
+                        old.ForceTouchHapticEnabled = legacyHaptics.Enabled ? 1u : 0u;
+                        old.ForceTouchHapticWaveform = (uint)legacyHaptics.Waveform;
+                        old.ForceTapDragCancelEnabled = defaults.ForceTapDragCancelEnabled;
+                    }
 
                     if (p.Pointer.StructVersion < 3)
                     {

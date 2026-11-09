@@ -12,78 +12,23 @@ namespace AmtPtpConfigGui
         DriverUnavailable,
         ActuatorUnavailable,
         FeedUnavailable,
+        // Enabled and the actuator is present; the live pressure meter is not
+        // being fed (it is only streamed while the Live switch is on).
+        Idle,
+        // Enabled, actuator present, live pressure meter being fed.
         Running,
     }
 
     internal readonly record struct HapticsStatus(HapticsState State, int Pressure, int Clicks);
 
     /// <summary>
-    /// Decides when a physical click has also been a firm press. Pure logic,
-    /// no I/O.
-    /// </summary>
-    internal sealed class HapticsLatch
-    {
-        private const int CooldownMs = 250;
-
-        private readonly int _threshold;
-        private readonly int _release;
-        private bool _armed;
-        private int _above;
-        private int _below;
-        private long _last = -1000;
-
-        public HapticsLatch(int threshold)
-        {
-            _threshold = threshold;
-            // 70% hysteresis. Keep in sync with the label next to the
-            // threshold slider (MainWindow.UpdateHapticsLabels).
-            _release = threshold * 7 / 10;
-        }
-
-        public void Reset()
-        {
-            _armed = false;
-            _above = 0;
-            _below = 0;
-        }
-
-        public bool Sample(int pressure, bool valid, bool button, long ms)
-        {
-            if (!valid || pressure <= _release)
-            {
-                _above = 0;
-                if (++_below >= 2)
-                    _armed = true;
-            }
-            else
-            {
-                _below = 0;
-                if (button && pressure >= _threshold)
-                    _above++;
-                else
-                    _above = 0;
-            }
-
-            if (valid && _armed && _above >= 2 && ms - _last >= CooldownMs)
-            {
-                _armed = false;
-                _above = 0;
-                _last = ms;
-                return true;
-            }
-
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// The second haptic click, running inside the control panel: a
-    /// background thread reads the driver's live pressure frames (shared with
-    /// the Live view through DeviceIo.SetLiveConsumer) and, on a firm press
-    /// after the physical click, fires one click through the actuator
-    /// driver. It keeps running while the window is hidden in the tray and
-    /// costs nothing while disabled: the live stream is released and the
-    /// actuator closed.
+    /// Companion of the second haptic click inside the control panel. The
+    /// click itself is played by the touchpad driver (it works without this
+    /// app); this class only (1) finds the actuator driver so the UI can say
+    /// whether it is installed, (2) plays the "Test click", and (3) while the
+    /// live pressure meter is visible (MeterWanted), reads the driver's live
+    /// pressure frames (shared with the Live view through
+    /// DeviceIo.SetLiveConsumer). It asks the driver for nothing otherwise.
     /// </summary>
     internal sealed class HapticsEngine : IDisposable
     {
@@ -125,6 +70,12 @@ namespace AmtPtpConfigGui
             Volatile.Read(ref _pressure),
             Volatile.Read(ref _clicks));
 
+        /// <summary>
+        /// Set by the UI while the live pressure meter is visible. Only then
+        /// is the driver asked for live frames.
+        /// </summary>
+        public volatile bool MeterWanted;
+
         /// <summary>Takes effect within one poll interval.</summary>
         public void Configure(HapticsConfig config)
         {
@@ -152,8 +103,6 @@ namespace AmtPtpConfigGui
         {
             var clock = Stopwatch.StartNew();
             CancellationToken token = _cts.Token;
-            HapticsConfig applied = _config;
-            var latch = new HapticsLatch(applied.Threshold);
             uint sequence = 0;
             long lastFrameMs = 0;
             bool liveHeld = false;
@@ -181,10 +130,6 @@ namespace AmtPtpConfigGui
                         continue;
                     }
 
-                    if (cfg.Threshold != applied.Threshold || cfg.Enabled != applied.Enabled)
-                        latch = new HapticsLatch(cfg.Threshold);
-                    applied = cfg;
-
                     if (!_device.IsConnected)
                     {
                         liveHeld = false;
@@ -193,7 +138,10 @@ namespace AmtPtpConfigGui
                         continue;
                     }
 
-                    // No actuator, no point streaming frames.
+                    // The second click itself is played by the touchpad driver
+                    // (it works without this app). All that is left here is to
+                    // tell the user whether the actuator driver is present and
+                    // to feed the live pressure meter while it is visible.
                     if (!EnsureActuator(now))
                     {
                         if (liveHeld)
@@ -204,6 +152,20 @@ namespace AmtPtpConfigGui
 
                         Publish(HapticsState.ActuatorUnavailable, 0);
                         token.WaitHandle.WaitOne(RetryMs);
+                        continue;
+                    }
+
+                    // No meter wanted: do not make the driver assemble live frames.
+                    if (!MeterWanted)
+                    {
+                        if (liveHeld)
+                        {
+                            _device.SetLiveConsumer(DeviceIo.LiveConsumer.Haptics, false);
+                            liveHeld = false;
+                        }
+
+                        Publish(HapticsState.Idle, 0);
+                        token.WaitHandle.WaitOne(IdleMs);
                         continue;
                     }
 
@@ -221,7 +183,6 @@ namespace AmtPtpConfigGui
                         liveHeld = true;
                         sequence = 0;
                         lastFrameMs = now;
-                        latch.Reset();
                     }
 
                     if (!_device.TryGetLiveFrame(out LiveFrame frame))
@@ -239,7 +200,6 @@ namespace AmtPtpConfigGui
                         // with fresh ones.
                         if (now - lastFrameMs > StaleMs)
                         {
-                            latch.Reset();
                             Volatile.Write(ref _pressure, 0);
                         }
 
@@ -258,9 +218,6 @@ namespace AmtPtpConfigGui
                     int pressure = valid ? frame.Contacts[0].Pressure : 0;
 
                     Publish(HapticsState.Running, pressure);
-
-                    if (latch.Sample(pressure, valid, frame.ButtonDown != 0, now) && TryClick(cfg.Waveform))
-                        Interlocked.Increment(ref _clicks);
 
                     token.WaitHandle.WaitOne(PollMs);
                 }
@@ -308,14 +265,6 @@ namespace AmtPtpConfigGui
             {
                 _actuator?.Dispose();
                 _actuator = null;
-            }
-        }
-
-        private bool TryClick(int waveform)
-        {
-            lock (_actuatorLock)
-            {
-                return _actuator != null && ClickUnsafe(waveform);
             }
         }
 

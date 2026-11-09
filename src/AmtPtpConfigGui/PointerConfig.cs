@@ -52,12 +52,20 @@ namespace AmtPtpConfigGui.Native
         // and RequirePressureContinuously are three independent options. See the
         // matching AMT_POINTER_CONFIG field in Public.h.
         public uint ForceTouchActionEnabled;
-        public uint ForceTouchHardTapHoldMs;
 
-        public const uint CurrentVersion = 13;
-        public const uint HardTapHoldMin = 300;
-        public const uint HardTapHoldMax = 3000;
-        public const uint HardTapHoldStep = 50;
+        // Second haptic click, played by the touchpad DRIVER itself at the
+        // moment of a Force Tap (so it works without this app running). The
+        // threshold is ForceTapThreshold. See the matching fields in Public.h.
+        public uint ForceTouchHapticEnabled;
+        public uint ForceTouchHapticWaveform;
+
+        // 1: movement past ForceTapDragLockoutDistance cancels Force Tap and
+        // the haptic click; 0: drag cancel is off. See Public.h.
+        public uint ForceTapDragCancelEnabled;
+
+        // 14: ForceTouchHardTapHoldMs removed; haptic fields added.
+        public const uint CurrentVersion = 14;
+        public const uint HapticWaveformMax = 1;
         public const uint ActionContextMenu = 0;
         public const uint ActionMiddleClick = 1;
         public const uint ActionDoubleClick = 2;
@@ -107,7 +115,9 @@ namespace AmtPtpConfigGui.Native
             ForceTapDragLockoutDistance = 130,
             ForceTouchEmulationDragLockoutDistance = 110,
             ForceTouchActionEnabled = 1,
-            ForceTouchHardTapHoldMs = 1300,
+            ForceTouchHapticEnabled = 1,
+            ForceTouchHapticWaveform = 1,
+            ForceTapDragCancelEnabled = 1,
         };
 
         public PointerConfig Clamped()
@@ -120,7 +130,9 @@ namespace AmtPtpConfigGui.Native
             c.RequirePressureToActivate = c.RequirePressureToActivate != 0 ? 1u : 0u;
             c.RequirePressureContinuously = c.RequirePressureContinuously != 0 ? 1u : 0u;
             c.ForceTouchActionEnabled = c.ForceTouchActionEnabled != 0 ? 1u : 0u;
-            c.ForceTouchHardTapHoldMs = ClampToGrid(c.ForceTouchHardTapHoldMs, HardTapHoldMin, HardTapHoldMax, HardTapHoldStep);
+            c.ForceTouchHapticEnabled = c.ForceTouchHapticEnabled != 0 ? 1u : 0u;
+            if (c.ForceTouchHapticWaveform > HapticWaveformMax) c.ForceTouchHapticWaveform = HapticWaveformMax;
+            c.ForceTapDragCancelEnabled = c.ForceTapDragCancelEnabled != 0 ? 1u : 0u;
             // Two INDEPENDENT small-contact gates per device kind - neither
             // flag forces the other off. Each has its own "M" threshold.
             c.SmallContactRejectionEnabled = c.SmallContactRejectionEnabled != 0 ? 1u : 0u;

@@ -356,7 +356,8 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     // freeze it would make the cursor appear stuck until finger lift.
     if ((pCtx->SupportsForceTouch &&
          pCtx->PointerConfig.ForceTouchEnabled &&
-         pCtx->PointerConfig.ForceTouchActionEnabled) ||
+         (pCtx->PointerConfig.ForceTouchActionEnabled ||
+          pCtx->PointerConfig.ForceTouchHapticEnabled)) ||
         (!pCtx->SupportsForceTouch &&
          pCtx->PointerConfig.ForceTouchEmulationEnabled)) {
         PTP_CONTACT* tracked = NULL;
@@ -434,7 +435,22 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     // FALSE and Force Click silently never sends a button pulse. Still
     // under StateLock, matching every other ForceTouchDeliveryState/
     // PendingForceTouchClickCount mutation in this file.
-    if (forceTouchClick) {
+    //
+    // forceTouchClick means "a hard press was recognised" (pressure over the
+    // threshold, press not dragged past the drag-cancel distance). On a
+    // pressure trackpad it can produce the Force Tap mouse action and/or the
+    // second haptic click, each switched independently; on a trackpad without
+    // a pressure sensor (hold-timer emulation) it is always the mouse action.
+    BOOLEAN forceTapMouse = forceTouchClick &&
+        (!pCtx->SupportsForceTouch ||
+         pCtx->PointerConfig.ForceTouchActionEnabled);
+    BOOLEAN forceTapHaptic = forceTouchClick &&
+        pCtx->SupportsForceTouch &&
+        pCtx->PointerConfig.ForceTouchEnabled &&
+        pCtx->PointerConfig.ForceTouchHapticEnabled;
+    ULONG   forceTapHapticWaveform = pCtx->PointerConfig.ForceTouchHapticWaveform;
+
+    if (forceTapMouse) {
         ULONG forceTapAction = AmtPointerResolveForceTapAction(pCtx);
         UCHAR clickCount =
             (forceTapAction == AMT_POINTER_ACTION_DOUBLE_CLICK)
@@ -444,7 +460,7 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
 
     // Capture force-touch delivery state while StateLock is held.
     BOOLEAN needMouseDelivery =
-        forceTouchClick ||
+        forceTapMouse ||
         (pCtx->ForceTouchDeliveryState != FORCE_TOUCH_DELIVERY_IDLE);
 
     // Preserve button/contact transitions instead of overwriting them
@@ -483,6 +499,14 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     }
 
     WdfSpinLockRelease(pCtx->StateLock);
+
+    // Second haptic click, played by this driver itself so it works without
+    // the Control Center. Sent outside StateLock; best-effort and
+    // non-blocking (see HapticLink.c) - a missing actuator driver or a busy
+    // previous click just means no click, never a delay in frame handling.
+    if (forceTapHaptic) {
+        AmtHapticLinkClick(pCtx, forceTapHapticWaveform);
+    }
 
     // Submit an available read right away; otherwise QueueReady will flush
     // the saved report as soon as HIDClass queues another request.

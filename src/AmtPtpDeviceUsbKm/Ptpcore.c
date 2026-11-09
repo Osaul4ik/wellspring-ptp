@@ -933,10 +933,16 @@ PTPCore_ProcessFrame(
     // RequirePressureContinuously (per-frame gate, Match.c). The two
     // pressure gates work with the action switched off; the action itself
     // is only live while both the master switch and its own switch are on.
+    //
+    // The hard-press arbitration runs when EITHER the Force Tap action or the
+    // second haptic click is on: OutForceTouchClick below just reports "a
+    // hard press was recognised", and Interrupt.c decides what it produces
+    // (mouse action and/or haptic click).
     BOOLEAN forceTouchHardwareActive =
         pCtx->SupportsForceTouch &&
         pCtx->PointerConfig.ForceTouchEnabled &&
-        pCtx->PointerConfig.ForceTouchActionEnabled;
+        (pCtx->PointerConfig.ForceTouchActionEnabled ||
+         pCtx->PointerConfig.ForceTouchHapticEnabled);
     BOOLEAN forceTouchEmulationActive =
         !pCtx->SupportsForceTouch && pCtx->PointerConfig.ForceTouchEmulationEnabled;
 
@@ -1036,39 +1042,37 @@ PTPCore_ProcessFrame(
             //
             //  - Press ramp: pressing harder flattens the fingertip and
             //    shifts the centroid. While the peak pressure is still
-            //    climbing (PENDING, or already latched and still being
-            //    pressed deeper) the anchor FOLLOWS the tracked contact, so
-            //    only movement after the pressure stops rising counts.
-            //    Bounded in time: a PENDING press that stops climbing
-            //    resolves within CLICK_ARBITRATION_STALL_FRAMES_FAST_RESOLVE
-            //    frames, and a deliberate drag is still caught from there.
+            //    climbing in a PENDING press the anchor FOLLOWS the tracked
+            //    contact, so only movement after the pressure stops rising
+            //    counts. A deliberate drag past the drag-cancel distance is
+            //    still caught from there.
             //
-            //  - Release: once FORCE_TOUCH is latched and the pressure has
-            //    fallen back under the threshold the finger is being
-            //    lifted, and it rolls off the pad. That drift is not intent,
-            //    and a press the user already completed must not be
-            //    cancelled by it. A drag while the pressure is still above
-            //    the threshold cancels as before.
+            //  - Release: after a Force Tap has fired (FORCE_TOUCH) the
+            //    press is committed and drift is ignored (see below), so the
+            //    finger rolling off the pad cannot cancel it.
             const BOOLEAN pressRamping =
                 forceTouchHardwareActive &&
-                (pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING ||
-                 pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH) &&
+                pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING &&
                 framePeakPressure > pCtx->ClickArbitrationPeakPressure;
-
-            const BOOLEAN releasingForceTouch =
-                forceTouchHardwareActive &&
-                pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH &&
-                (ULONG)framePeakPressure < pCtx->PointerConfig.ForceTapThreshold;
 
             if (pressRamping && !pCtx->ForceTouchDragLockout) {
                 pCtx->ForceTouchAnchorX = bestX;
                 pCtx->ForceTouchAnchorY = bestY;
-            } else if (!releasingForceTouch) {
+            } else {
+                // Once a Force Tap has fired (FORCE_TOUCH) the press is
+                // committed: it can no longer be turned into a drag, so
+                // later drift (e.g. the finger rolling off while the
+                // pressure is released) is ignored.
                 INT adx = (bestDx < 0) ? -bestDx : bestDx;
                 INT ady = (bestDy < 0) ? -bestDy : bestDy;
-                if ((adx > dragLockoutDistance || ady > dragLockoutDistance) &&
-                    !(forceTouchEmulationActive &&
-                      pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH)) {
+                // Hardware path: the user can switch drag cancel off entirely
+                // (ForceTapDragCancelEnabled == 0), in which case movement
+                // never cancels the press.
+                const BOOLEAN dragCancelOn = !forceTouchHardwareActive ||
+                    pCtx->PointerConfig.ForceTapDragCancelEnabled;
+                if (dragCancelOn &&
+                    (adx > dragLockoutDistance || ady > dragLockoutDistance) &&
+                    pCtx->ClickArbitrationState != CLICK_ARBITRATION_FORCE_TOUCH) {
                     pCtx->ForceTouchDragLockout = TRUE;
                 }
             }
@@ -1098,28 +1102,13 @@ PTPCore_ProcessFrame(
     BOOLEAN releasedFastClick = FALSE;
 
     // Set within the ButtonDown branch below, on the exact frame the
-    // emulation hold-timer crosses ForceTouchEmulationHoldMs (edge, not
-    // level) - see the force-touch delivery block near the end for why
-    // emulation specifically needs edge-firing (hardware doesn't - see
-    // hardwareReleaseWasForceTouch below instead). FORCE_TOUCH is only
-    // ever entered once per press for either path (it's a one-way latch to
-    // either HARD_TAP via drag lockout or held until release - see "else:
-    // FORCE_TOUCH already latched" below), so this frame-local edge is the
-    // ONLY place emulation ever needs to fire; no persistent "already
-    // delivered" flag is needed to guard against a second delivery.
+    // press crosses into FORCE_TOUCH - the hardware pressure threshold or
+    // the emulation hold-timer (ForceTouchEmulationHoldMs); an edge, not a
+    // level. FORCE_TOUCH is only ever entered once per press (a one-way
+    // latch held until release), so this frame-local edge is the ONLY place
+    // either path fires; no persistent "already delivered" flag is needed
+    // to guard against a second delivery.
     BOOLEAN forceTouchFiredThisFrame = FALSE;
-
-    // Hardware only: fires on release, not on the pressure-threshold-cross
-    // edge - unlike emulation. Captured BEFORE the !ButtonDown branch below
-    // resets ClickArbitrationState to IDLE, so this reads the state as it
-    // stood for the whole held duration. A press still FORCE_TOUCH at the
-    // exact moment of release delivers the pulse now, at the position the
-    // release frame reports; a press that drag-lockout retroactively
-    // downgraded to HARD_TAP before release delivers nothing (drag still
-    // cancels a force touch, same as always).
-    BOOLEAN hardwareReleaseWasForceTouch =
-        !ButtonDown && forceTouchHardwareActive &&
-        (pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH);
 
     if (!ButtonDown) {
         if (pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING) {
@@ -1134,69 +1123,32 @@ PTPCore_ProcessFrame(
             pCtx->ClickArbitrationStallFrames   = 0;
         }
 
-        // Hardware only: a confirmed Force Touch can turn into a held click
-        // after the hard-tap limit. Emulation has already fired its action
-        // at the hold threshold and must remain committed until release.
-        // The clock starts at the physical press edge (IDLE -> PENDING),
-        // NOT when either force-touch mode first becomes active.
-        if (forceTouchHardwareActive &&
-            pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH &&
-            pCtx->PerfFrequency.QuadPart > 0 &&
-            NowQpc >= pCtx->ClickArbitrationStartQpc &&
-            (NowQpc - pCtx->ClickArbitrationStartQpc) >=
-                ((LONGLONG)pCtx->PointerConfig.ForceTouchHardTapHoldMs *
-                 pCtx->PerfFrequency.QuadPart) / 1000) {
-            pCtx->ClickArbitrationState = CLICK_ARBITRATION_HARD_TAP;
-        }
-
         if (pCtx->ForceTouchDragLockout &&
-            !(forceTouchEmulationActive &&
-              pCtx->ClickArbitrationState == CLICK_ARBITRATION_FORCE_TOUCH)) {
-            // Movement past the lockout always wins, this frame or any later
-            // one - including retroactively cancelling a FORCE_TOUCH already
-            // decided earlier this same press.
+            pCtx->ClickArbitrationState != CLICK_ARBITRATION_FORCE_TOUCH) {
+            // Movement past the drag-cancel distance wins over a still
+            // undecided press, this frame or any later one: no Force Tap
+            // and no haptic click, the press is an ordinary click/drag. A
+            // Force Tap that already fired stays committed.
             pCtx->ClickArbitrationState = CLICK_ARBITRATION_HARD_TAP;
         } else if (pCtx->ClickArbitrationState == CLICK_ARBITRATION_PENDING) {
             if (forceTouchHardwareActive) {
-                if (framePeakPressure > pCtx->ClickArbitrationPeakPressure) {
+                // No hold time, no stall/timeout fast-exit: the press stays
+                // PENDING for as long as the button is held, the finger has
+                // not been dragged past the drag-cancel distance (handled
+                // above) and the pressure has not crossed the threshold.
+                // The user can rest on a hard tap and press harder whenever
+                // they like; the haptic click tells them it happened.
+                if (framePeakPressure > pCtx->ClickArbitrationPeakPressure)
                     pCtx->ClickArbitrationPeakPressure = framePeakPressure;
-                    // Still climbing - keep resetting the stall counter. Peak
-                    // comparison is noise-robust (only moves up).
-                    pCtx->ClickArbitrationStallFrames = 0;
-                } else if (pCtx->ClickArbitrationStallFrames < 255) {
-                    pCtx->ClickArbitrationStallFrames++;
-                }
-
-                INT dropFromPeak = (INT)pCtx->ClickArbitrationPeakPressure -
-                                    (INT)framePeakPressure;
 
                 if (framePeakPressure > pCtx->PointerConfig.ForceTapThreshold) {
                     pCtx->ClickArbitrationState = CLICK_ARBITRATION_FORCE_TOUCH;
 
-                    // Hardware delivers on release (hardwareReleaseWasForceTouch
-                    // below), NOT here - unlike emulation. This only latches
-                    // the state; while it's within the drag-lockout radius
-                    // here (any real drag would already have tripped
-                    // lockout and resolved to HARD_TAP instead - see the
-                    // REWORK note above), *OutButtonClickReport below has
-                    // never reported the ordinary click for this press, and
-                    // won't for as long as this state holds.
-                } else if (dropFromPeak >= CLICK_ARBITRATION_PRESSURE_HYSTERESIS) {
-                    pCtx->ClickArbitrationState = CLICK_ARBITRATION_HARD_TAP;
-                } else if (pCtx->ClickArbitrationStallFrames >= CLICK_ARBITRATION_STALL_FRAMES_FAST_RESOLVE) {
-                    // FIX (soft-press fast resolve): a flat/light press that has
-                    // stopped growing for STALL_FRAMES_FAST_RESOLVE consecutive
-                    // frames is never a force touch - resolve now instead of
-                    // waiting out the full timeout.
-                    pCtx->ClickArbitrationState = CLICK_ARBITRATION_HARD_TAP;
-                } else {
-                    // Safety net: absolute wall-clock cap so a slow ramp that
-                    // never stalls in a row still can't wait forever.
-                    LONGLONG elapsedTicks = NowQpc - pCtx->ClickArbitrationStartQpc;
-                    LONGLONG timeoutTicks = pCtx->ClickArbitrationTimeoutTicks; // MICRO-OPT: cached at D0Entry
-                    if (elapsedTicks >= timeoutTicks) {
-                        pCtx->ClickArbitrationState = CLICK_ARBITRATION_HARD_TAP;
-                    }
+                    // Fire NOW, at the threshold crossing (and together with
+                    // the haptic click) rather than on release. The drag
+                    // lockout was evaluated before this, so a press already
+                    // dragged past the drag-cancel distance never gets here.
+                    forceTouchFiredThisFrame = TRUE;
                 }
             } else {
                 // Force Touch emulation: this hardware has no pressure
@@ -1229,10 +1181,9 @@ PTPCore_ProcessFrame(
                 if (holdTicks > 0 && elapsedTicks >= holdTicks) {
                     pCtx->ClickArbitrationState = CLICK_ARBITRATION_FORCE_TOUCH;
 
-                    // FIRE NOW, not on release - unlike hardware
-                    // (hardwareReleaseWasForceTouch above). Emulation's
-                    // hold can run up to 2 seconds (vs hardware's ~90ms
-                    // pressure ramp), so deferring to release would mean
+                    // FIRE NOW, not on release (same as hardware).
+                    // Emulation's hold can run up to 2 seconds, so
+                    // deferring to release would mean
                     // holding a force touch for, say, a full second past
                     // the threshold produces no feedback until the finger
                     // finally lifts - firing right on the threshold cross
@@ -1287,24 +1238,20 @@ PTPCore_ProcessFrame(
     *OutButtonClickReport = releasedFastClick ||
         (pCtx->ClickArbitrationState == CLICK_ARBITRATION_HARD_TAP);
 
-    // Force-touch delivery, two different edges depending on path:
+    // Force-touch delivery: both paths fire on the edge where the press
+    // becomes FORCE_TOUCH (forceTouchFiredThisFrame, set above):
     //
-    // - Hardware (pressure): fires on release (hardwareReleaseWasForceTouch,
-    //   captured above) - a press still FORCE_TOUCH at the exact moment of
-    //   release delivers the pulse then, at the release frame's position.
-    //   A drag-lockout downgrade to HARD_TAP before release cancels it, same
-    //   as always.
+    // - Hardware: the instant the pressure crosses ForceTapThreshold while
+    //   the press is still within the drag-cancel distance. A press already
+    //   dragged past it never gets here (drag lockout resolves it to
+    //   HARD_TAP first, same frame), so it produces neither the Force Tap
+    //   nor the haptic click. There is no hold-time limit.
     //
-    // - Emulation (hold-duration): fires the instant the hold-timer crosses
-    //   ForceTouchEmulationHoldMs (forceTouchFiredThisFrame, set above), not
-    //   on release - see that site for why (up to 2s hold makes release-fire
-    //   feel unresponsive, unlike hardware's ~90ms ramp). FORCE_TOUCH is a
-    //   one-way latch per press (drag lockout can only downgrade it to
-    //   HARD_TAP, never back), so this frame-local edge is the only place
-    //   emulation ever needs to fire - no risk of a second delivery later.
+    // - Emulation: the instant the hold-timer crosses ForceTouchEmulationHoldMs.
     //
-    // Both paths still go through the same single down+up pulse, delivered
-    // by Interrupt.c's AmtForceTouchClickEnqueue / ForceTouchDeliveryState
-    // over the next couple of mouse reports.
-    *OutForceTouchClick = hardwareReleaseWasForceTouch || forceTouchFiredThisFrame;
+    // FORCE_TOUCH is a one-way latch per press, so there is no risk of a
+    // second delivery. Interrupt.c turns this edge into the mouse pulse
+    // (AmtForceTouchClickEnqueue / ForceTouchDeliveryState, over the next
+    // couple of mouse reports) and/or the haptic click (HapticLink.c).
+    *OutForceTouchClick = forceTouchFiredThisFrame;
 }

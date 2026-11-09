@@ -179,6 +179,7 @@ jobs:
         }
         Copy-Item -Path "src\InstallCert.bat" -Destination $packageDir -Force -ErrorAction SilentlyContinue
         Copy-Item -Path "src\TestMode.bat" -Destination $packageDir -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path "src\AmtPtpConfigGui\installer\DriverInstallPrompt.bat" -Destination $packageDir -Force -ErrorAction SilentlyContinue
 
         $infPath = Join-Path $packageDir "$env:DRIVER_NAME.inf"
         & "$env:STAMPINF_PATH" -f "$infPath" -a amd64 -d "$env:DRIVER_DATE" -v "$env:DRIVER_VERSION" -k 1.33
@@ -540,7 +541,8 @@ jobs:
           src\AmtPtpConfigGui\installer\WellspringControlCenter.iss `
           "/DMyAppVersion=${{ needs.build-and-package.outputs.version }}" `
           "/DSourceDir=$PWD\stage\min\WellspringPTP\Gui" `
-          "/DDriverSourceDir=$PWD\stage\min\WellspringPTP\Driver"
+          "/DDriverSourceDir=$PWD\stage\min\WellspringPTP\Driver" `
+          "/DHapticDriverSourceDir=$PWD\stage\min\WellspringPTP\HapticDriver"
         if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
       shell: pwsh
 

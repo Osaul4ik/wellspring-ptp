@@ -804,8 +804,14 @@ namespace AmtPtpConfigGui
                 // the "Enable Force Touch" master; older configs keep it on.
                 if (cfg.StructVersion < 12)
                     cfg.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
-                if (cfg.StructVersion < 13)
-                    cfg.ForceTouchHardTapHoldMs = defaults.ForceTouchHardTapHoldMs;
+                // Version 13 → 14: hold time removed, haptic click now lives
+                // in the driver (on by default, firm waveform).
+                if (cfg.StructVersion < 14)
+                {
+                    cfg.ForceTouchHapticEnabled = defaults.ForceTouchHapticEnabled;
+                    cfg.ForceTouchHapticWaveform = defaults.ForceTouchHapticWaveform;
+                    cfg.ForceTapDragCancelEnabled = defaults.ForceTapDragCancelEnabled;
+                }
             }
 
             return cfg.Clamped();
@@ -2414,8 +2420,7 @@ namespace AmtPtpConfigGui
 
             int threshold = (int)Math.Round(SlHapticsThreshold.Value);
 
-            // The engine re-arms below 70% of the threshold (HapticsLatch).
-            LblHapticsThreshold.Text = $"{threshold} · release at {threshold * 7 / 10}";
+            LblHapticsThreshold.Text = $"{threshold}";
         }
 
         private void HapticsGroup_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -2437,6 +2442,9 @@ namespace AmtPtpConfigGui
 
         private void RefreshHapticsStatus()
         {
+            // Feed the live pressure meter only while it is visible.
+            _haptics.MeterWanted = ForceTouchGroup.IsVisible && ChkLive.IsChecked == true;
+
             HapticsStatus status = _haptics.Status;
             bool running = status.State == HapticsState.Running;
 
@@ -2445,11 +2453,12 @@ namespace AmtPtpConfigGui
             if (ChkLive.IsChecked == true)
             {
                 PbHapticsPressure.Value = Math.Min(status.Pressure, PbHapticsPressure.Maximum);
-                LblHapticsPressure.Text = running ? $"{status.Pressure} · {status.Clicks} clicks" : "—";
+                LblHapticsPressure.Text = running ? $"{status.Pressure}" : "—";
             }
             LblHapticsStatus.Text = status.State switch
             {
-                HapticsState.Running => "Active · second click is on",
+                HapticsState.Running or HapticsState.Idle =>
+                    "On · the driver plays the second click itself, also when this app is closed.",
                 HapticsState.Disabled => "Off · enable it above and press Save.",
                 HapticsState.DriverUnavailable => "Waiting for the Wellspring driver (not connected).",
                 HapticsState.ActuatorUnavailable => "The Wellspring haptic actuator driver is not installed or not ready. Clicks are skipped until it appears.",
@@ -2477,10 +2486,17 @@ namespace AmtPtpConfigGui
             try
             {
                 cfg = cfg.Clamped();
-                // ForceTapThreshold is not shown here any more: it is driven
-                // by the haptics "Pressure needed" slider (SlHapticsThreshold).
+                // ForceTapThreshold, the haptic switch and the waveform share
+                // the "Force Touch & Haptics" group: "Pressure needed" is the
+                // single pressure threshold, and the driver plays the haptic
+                // click itself, so all three live in the driver's config
+                // (registry) and are shown from it here.
+                SlHapticsThreshold.Value = Math.Clamp(
+                    (int)cfg.ForceTapThreshold, HapticsConfig.ThresholdMin, HapticsConfig.ThresholdMax);
+                ChkHapticsEnabled.IsChecked = cfg.ForceTouchHapticEnabled != 0;
+                CmbHapticsWaveform.SelectedIndex = cfg.ForceTouchHapticWaveform == 0 ? 0 : 1;
+                ChkForceTapDragCancel.IsChecked = cfg.ForceTapDragCancelEnabled != 0;
                 SlForceTapDragLockoutDistance.Value = cfg.ForceTapDragLockoutDistance;
-                SlForceTouchHardTapHoldMs.Value = cfg.ForceTouchHardTapHoldMs;
                 ChkForceTouchEnabled.IsChecked = cfg.ForceTouchEnabled != 0;
                 ChkRequirePressure.IsChecked = cfg.RequirePressureToActivate != 0;
                 ChkRequirePressureContinuously.IsChecked = cfg.RequirePressureContinuously != 0;
@@ -2554,7 +2570,9 @@ namespace AmtPtpConfigGui
             // haptics "Pressure needed" value.
             c.ForceTapThreshold = (uint)Math.Round(SlHapticsThreshold.Value);
             c.ForceTapDragLockoutDistance = (uint)SlForceTapDragLockoutDistance.Value;
-            c.ForceTouchHardTapHoldMs = (uint)SlForceTouchHardTapHoldMs.Value;
+            c.ForceTapDragCancelEnabled = ChkForceTapDragCancel.IsChecked == true ? 1u : 0u;
+            c.ForceTouchHapticEnabled = ChkHapticsEnabled.IsChecked == true ? 1u : 0u;
+            c.ForceTouchHapticWaveform = CmbHapticsWaveform.SelectedIndex == 0 ? 0u : 1u;
             c.ForceTouchEnabled = ChkForceTouchEnabled.IsChecked == true ? 1u : 0u;
             c.RequirePressureToActivate = ChkRequirePressure.IsChecked == true ? 1u : 0u;
             c.RequirePressureContinuously =
@@ -2595,7 +2613,6 @@ namespace AmtPtpConfigGui
         {
             if (LblForceTapDragLockoutDistance == null) return;
             LblForceTapDragLockoutDistance.Text = $"{SlForceTapDragLockoutDistance.Value:0}";
-            LblForceTouchHardTapHoldMs.Text = $"{SlForceTouchHardTapHoldMs.Value / 1000.0:0.00} s";
             LblCursorSmoothing.Text = $"{SlCursorSmoothing.Value:0}%";
             LblCursorSpeed.Text = $"{SlCursorSpeed.Value:0}%";
             LblCursorDeadzone.Text = $"{SlCursorDeadzone.Value:0}";
@@ -2643,7 +2660,8 @@ namespace AmtPtpConfigGui
                 ChkRequirePressure == null ||
                 ChkRequirePressureContinuously == null ||
                 SlForceTapDragLockoutDistance == null ||
-                SlForceTouchHardTapHoldMs == null ||
+                ChkHapticsEnabled == null ||
+                ChkForceTapDragCancel == null ||
                 ForceTapActionPanel == null ||
                 LblForceTapAction == null)
                 return;
@@ -2654,11 +2672,14 @@ namespace AmtPtpConfigGui
             ChkForceTouchAction.IsEnabled = master;
             ChkRequirePressure.IsEnabled = master;
             ChkRequirePressureContinuously.IsEnabled = master;
+            ChkHapticsEnabled.IsEnabled = master;
 
-            SlForceTapDragLockoutDistance.IsEnabled = action;
-            SlForceTouchHardTapHoldMs.IsEnabled = _forceTouchSupported
-                ? action
-                : ChkForceTouchEmulationEnabled?.IsChecked == true;
+            // A hard press is arbitrated for the Force Tap action AND for the
+            // haptic click, so the drag-cancel distance applies to either.
+            bool pressActive =
+                master && (ChkForceTouchAction.IsChecked == true || ChkHapticsEnabled.IsChecked == true);
+            ChkForceTapDragCancel.IsEnabled = pressActive;
+            SlForceTapDragLockoutDistance.IsEnabled = pressActive && ChkForceTapDragCancel.IsChecked == true;
             ForceTapActionPanel.IsEnabled = action;
             LblForceTapAction.IsEnabled = action;
         }
@@ -2675,8 +2696,6 @@ namespace AmtPtpConfigGui
             ForceTouchEmulationActionPanel.IsEnabled = enabled;
             ForceTouchEmulationHoldRow.IsEnabled = enabled;
             SlForceTouchEmulationHoldMs.IsEnabled = enabled;
-            if (SlForceTouchHardTapHoldMs != null && !_forceTouchSupported)
-                SlForceTouchHardTapHoldMs.IsEnabled = enabled;
         }
 
         private void SmallContactRejectionOption_Changed(object sender, RoutedEventArgs e)

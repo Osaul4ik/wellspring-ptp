@@ -12,13 +12,16 @@ hardware**. Other models are not enabled by the INF.
 
 ## Components
 
-- Control Center (`src/AmtPtpConfigGui`): the settings, and the engine that
-  does the work (`HapticsEngine.cs`). No separate program is involved.
+- `src/AmtPtpDeviceUsbKm` (the touchpad driver): decides when a hard press is
+  a Force Tap and plays the haptic click itself (`HapticLink.c`), by sending
+  one IOCTL to the actuator driver's device interface. It needs no user-mode
+  program, so it works when Control Center is closed.
 - `src/AmtHapticDeviceUsbKm`: the actuator driver, a small KMDF function driver
   for one interface (`MI_03`) of the trackpad's composite USB device. It is
   independent of the touchpad driver: the touchpad driver filters `MI_02`, this
-  one owns `MI_03`, and neither knows about the other. Its only job is to play a
-  fixed click waveform on request.
+  one owns `MI_03`. Its only job is to play a fixed click waveform on request.
+- Control Center (`src/AmtPtpConfigGui`): the settings, the live pressure
+  meter, the actuator status and the Test click (`HapticsEngine.cs`).
 
 ## Settings
 
@@ -39,38 +42,61 @@ because it also drives Force Touch.
 
 ## Behavior
 
-A background thread inside Control Center reads Wellspring's live pressure
-frames and fires one click through the actuator driver. It keeps working while
-the window is hidden in the tray, but not after the app is closed (use
-"Start with Windows" to have it available after sign-in). While haptics are off,
-or the actuator driver is not installed, it asks the driver for nothing.
+The physical click arbitrates a press. While the button is held and the finger
+has not moved past **Drag cancel distance**, pressing harder than **Pressure
+needed** makes the driver fire the haptic click and the Force Tap action
+(for example the context menu) at the same moment. There is no hold time: the
+press can rest as long as you like before pressing harder. It does not repeat
+while held; release the button to rearm.
 
-The default threshold is 265 raw pressure units, with release at 70% of that
-value. The same value is used by the driver for Force Touch. Two fresh samples above threshold trigger one waveform. Holding the
-press does not repeat it; pressure must fall below the release threshold to
-rearm. It also requires one confident non-palm contact and physical
-button-down, imposes a 250 ms cooldown, and resets after a stale feed.
+If the finger moves past the drag-cancel distance first, the press is an
+ordinary click or drag: no haptic click and no Force Tap. A Force Tap that has
+already fired stays committed.
 
-The raw scale is device-specific; use the live meter to pick a threshold (the meter is shown only while the toolbar's **Live** switch is on).
-Light/firm are captured waveform names, not a guarantee of perceptibly
-different strength on every device. **Test click** plays the selected waveform
-without pressing, saved or not.
+**Drag cancel** can be switched off in the same group (the slider greys out).
+Then movement never cancels: a hard press fires the haptic click and the Force
+Tap wherever the finger is, and the ordinary click is only reported on release,
+so click-and-drag does not work while Force Touch is active. It is stored in
+the registry like the other values.
 
-Force Touch's mouse action should be disabled ("Force Touch action" in the
-Pointer tab) when only haptic feedback is wanted. This extension does not
-change pointer settings automatically.
+Trade-off: while a press is undecided the ordinary button-down is held back, so
+a click-and-hold only starts (as a drag) once the finger moves past the
+drag-cancel distance, and a plain click is reported on release.
 
-The Live view and haptics share the driver's live stream (`DeviceIo.SetLiveConsumer`):
-it stays on while either wants it, so hiding the window to the tray or turning
-Live off does not stop haptics. The engine recovers on its own after the driver
-restarts, sleep/wake, or the actuator reappearing.
+Settings (including **Pressure needed**, the haptic switch and the waveform)
+are stored by the driver in the registry, so they apply at every boot without
+Control Center. The Control Center only edits them and, while the toolbar's
+**Live** switch is on, shows the live pressure to help choose a threshold. The
+raw scale is device-specific. Light/firm are captured waveform names, not a
+guarantee of perceptibly different strength. **Test click** plays the selected
+waveform without pressing.
+
+To get only the haptic feedback, turn off **Force Touch action**.
+
+## Installing and removing the actuator driver
+
+The installer (`WellspringPTP-Setup-*.exe`, built by `BuildAll.yml`) installs
+the haptic actuator driver together with the touchpad driver (same Test Mode /
+certificate / reboot flow; the haptic package is signed with the same
+certificate) and removes both on uninstall. Older haptic packages are removed
+before a reinstall, so oemNN.inf copies do not pile up. If the haptic driver
+fails to install, the touchpad driver is still installed and only the haptic
+click is missing.
+
+`DriverInstallPrompt.bat` (shipped in the driver archive) does the same from a
+command line: run it for an Install / Uninstall menu, or pass the mode
+directly: `DriverInstallPrompt.bat AmtPtpDeviceUsbKm install` /
+`... uninstall`. It looks for `AmtHapticDeviceUsbKm.*` next to itself or in a
+sibling `HapticDriver` folder. `InstallCert.bat` only imports the certificate
+and is unchanged.
 
 ## Actuator driver
 
 The driver is organised like the touchpad driver (`Driver`, `Device`, `Queue`,
 `Trace`, `Public`) plus `Actuator.c`, which holds everything hardware-specific.
 
-- **Interface contract** (`Public.h`, mirrored in `HapticsActuator.cs`): a device
+- **Interface contract** (`Public.h`, mirrored in `HapticsActuator.cs` and in the
+  touchpad driver's `HapticLink.h`): a device
   interface GUID and two IOCTLs, `GET_INFO` and `CLICK`, with versioned
   structures. Control Center checks the driver's interface version when it opens
   the device and refuses a driver built from a different revision.
@@ -106,7 +132,8 @@ install for the GUI side. The actuator driver builds with the same toolchain as
 the touchpad driver (`AmtHapticDeviceUsbKm.vcxproj`, same configuration matrix).
 Like the touchpad driver, its INF is not part of the project: CI stamps it
 (StampInf), catalogs it (Inf2Cat) and signs it. `BuildAll` ships it in a separate
-`HapticDriver` folder of the release archives (not in the installer), and
+`HapticDriver` folder of the release archives and also embeds it in the
+installer (see above), and
 `StaticAnalysis` runs the same strict PREfast pass over it. Driver signing and
 installation are otherwise deliberately separate. Do not distribute a local
 private signing key, certificate trust setup, or machine-specific driver backup
@@ -121,8 +148,9 @@ Do not disable Test Mode while dependent experimental drivers are installed.
 Revert each affected interface to its original driver before cleaning up test
 trust. Never replace the composite parent, keyboard, or Apple USB host driver.
 
-Sleep/wake recovery and long-term stability have not been established. If the
-pressure feed disconnects, the helper stops; the panel then offers Start helper.
+Sleep/wake recovery and long-term stability have not been established. The
+touchpad driver re-finds the actuator driver by itself when its device
+interface re-appears (for example after a replug or resume).
 
 ## Attribution
 

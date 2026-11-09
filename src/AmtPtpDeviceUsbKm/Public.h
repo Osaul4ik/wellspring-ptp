@@ -170,14 +170,38 @@ typedef struct _AMT_POINTER_CONFIG
     // Force Tap action being emitted. Has no effect when ForceTouchEnabled
     // is 0. Default 1 (the behaviour before this flag existed).
     ULONG ForceTouchActionEnabled;
-    ULONG ForceTouchHardTapHoldMs; // 1300 ms default, hardware only
+
+    // Second haptic click, played by the touchpad driver ITSELF (through the
+    // separate AmtHapticDeviceUsbKm actuator driver) at the exact moment a
+    // hard press becomes a Force Tap - same pressure threshold
+    // (ForceTapThreshold), same drag-cancel rule - so it works without the
+    // Control Center running. Persisted in the registry like every other
+    // field here. Ignored on trackpads without a pressure sensor and when the
+    // actuator driver is not installed. Independent of
+    // ForceTouchActionEnabled: with the action off the press is still
+    // arbitrated and only the haptic click is produced.
+    ULONG ForceTouchHapticEnabled;
+    ULONG ForceTouchHapticWaveform;   // AMT_POINTER_HAPTIC_WAVEFORM_*
+
+    // Hardware path only. 1 (default): moving the finger past
+    // ForceTapDragLockoutDistance before the press is recognised cancels the
+    // Force Tap and the haptic click (the press becomes an ordinary click or
+    // drag). 0: movement never cancels, so a hard press fires the Force Tap
+    // and the haptic click wherever the finger is; the ordinary button-down is
+    // then only reported on release, i.e. click-and-drag is not possible while
+    // Force Touch is active.
+    ULONG ForceTapDragCancelEnabled;
 } AMT_POINTER_CONFIG, *PAMT_POINTER_CONFIG;
 
-#define AMT_POINTER_CONFIG_VERSION 13
+// 14: ForceTouchHardTapHoldMs removed (a Force Tap can now be made at any time
+// while the press is held and has not been dragged past the drag-cancel
+// distance); ForceTouchHapticEnabled / ForceTouchHapticWaveform added.
+#define AMT_POINTER_CONFIG_VERSION 14
 
-#define AMT_POINTER_HARD_TAP_HOLD_MIN  300
-#define AMT_POINTER_HARD_TAP_HOLD_MAX  3000
-#define AMT_POINTER_HARD_TAP_HOLD_STEP 50
+// Same values as AMT_HAPTIC_WAVEFORM_LIGHT / _FIRM in AmtHapticDeviceUsbKm.
+#define AMT_POINTER_HAPTIC_WAVEFORM_LIGHT 0
+#define AMT_POINTER_HAPTIC_WAVEFORM_FIRM  1
+#define AMT_POINTER_HAPTIC_WAVEFORM_MAX   1
 
 #define AMT_POINTER_SMOOTH_MIN       0
 #define AMT_POINTER_SMOOTH_MAX       100
@@ -244,7 +268,9 @@ typedef struct _AMT_POINTER_CONFIG
     130,                                                                    \
     110,                                                                    \
     /* ForceTouchActionEnabled                 */ 1,                       \
-    /* ForceTouchHardTapHoldMs                 */ 1300                     \
+    /* ForceTouchHapticEnabled                 */ 1,                       \
+    /* ForceTouchHapticWaveform                */ AMT_POINTER_HAPTIC_WAVEFORM_FIRM, \
+    /* ForceTapDragCancelEnabled               */ 1                        \
 }
 
 // Sane clamp range - keep the threshold away from degenerate values (0 would

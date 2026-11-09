@@ -40,6 +40,9 @@
     <ClInclude Include="PTPCore.h">
       <Filter>PTPCore</Filter>
     </ClInclude>
+    <ClInclude Include="HapticLink.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Input.h">
       <Filter>PTPCore</Filter>
     </ClInclude>
@@ -70,6 +73,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Interrupt.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="HapticLink.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Hid.c">

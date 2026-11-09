@@ -1468,7 +1468,8 @@
                                                      Background="{DynamicResource ControlFillBrush}"
                                                      BorderBrush="{DynamicResource ControlStrokeBrush}"/>
                                     </StackPanel>
-                                    <Grid Style="{StaticResource SettingRow}" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <CheckBox x:Name="ChkForceTapDragCancel" Style="{StaticResource OptionCheckBox}" Margin="0,12,0,4" Content="Drag cancel" IsChecked="True" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="On: if the finger moves farther than “Drag cancel distance” before the press is recognised, there is neither a haptic click nor a Force Tap, and the press is an ordinary click or drag. Off: movement never cancels, so a hard press fires the haptic click and the Force Tap wherever the finger is; the ordinary click is then only reported on release, so click-and-drag does not work while Force Touch is active."/>
+                                    <Grid Style="{StaticResource SettingRow}" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <TextBlock Style="{StaticResource SliderLabel}" Text="Drag cancel distance" ToolTip="How far the contact may drift from where the press started before Force Touch is cancelled and treated as an ordinary drag instead. Raw sensor units, not pixels."/>
                                         <TextBlock x:Name="LblForceTapDragLockoutDistance" Grid.Column="1" Style="{StaticResource SliderValue}"/>
                                     </Grid>
@@ -1483,7 +1484,7 @@
                                         <RadioButton x:Name="RbActionMiddleClick" Content="Middle mouse button" GroupName="ForceTapAction" Margin="0,4" Checked="PointerAction_Changed" ToolTip="Send a middle mouse button click."/>
                                         <RadioButton x:Name="RbActionDoubleClick" Content="Double click" GroupName="ForceTapAction" Margin="0,4" Checked="PointerAction_Changed" ToolTip="Send a double left-click."/>
                                     </StackPanel>
-                                    <CheckBox x:Name="ChkHapticsEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,14,0,4" Content="Enable second haptic click" ToolTip="After the physical click, pressing harder than “Pressure needed” fires a second haptic click. Uses the trackpad's real pressure sensor. Turning this off does not change when Force Touch triggers."/>
+                                    <CheckBox x:Name="ChkHapticsEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,14,0,4" Content="Enable second haptic click" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="While the trackpad is physically clicked and the finger has not moved past “Drag cancel distance”, pressing harder than “Pressure needed” plays a second haptic click, at the same moment as the Force Tap action. Played by the driver itself, so it also works when this app is closed. Turning this off does not change when the Force Tap action triggers."/>
                                     <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <TextBlock Style="{StaticResource SliderLabel}" Text="Click waveform" ToolTip="Light and firm are captured actuator waveforms; they may feel alike on some units."/>
                                         <ComboBox x:Name="CmbHapticsWaveform" Grid.Column="1" Width="120" SelectedIndex="1">
@@ -1493,7 +1494,7 @@
                                     </Grid>
                                     <Button Content="Test click" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Height="36" Padding="14,0" Margin="0,12,0,0" Click="HapticsTest_Click" ToolTip="Fire the selected waveform once, without pressing."/>
                                     <TextBlock x:Name="LblHapticsStatus" Style="{StaticResource HintText}" Text="Checking haptics…"/>
-                                    <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="“Pressure needed” is the single pressure threshold: the Force Tap action and the second haptic click both fire at that value. Force Touch and haptic settings are part of the profile and are applied with “Save”. The second click works while this window is hidden in the tray, but not after the app is closed. It needs the Wellspring haptic actuator driver. To get only the haptic feedback, turn off “Force Touch action”."/>
+                                    <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="Hold a hard tap (physical click) without moving the finger past “Drag cancel distance”, then press harder than “Pressure needed”: the haptic click plays and the Force Tap action (for example the context menu) fires at the same moment. There is no hold time, so you can take as long as you like. If the finger moves past the drag cancel distance first, neither the haptic click nor the Force Tap happens and the press is an ordinary click or drag. All of this runs in the driver, so it works without this app running; the settings are saved in the registry when you press “Save”. The haptic click needs the Wellspring haptic actuator driver. To get only the haptic feedback, turn off “Force Touch action”."/>
                                     <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="Force Touch settings are available in the normal mode; Pro Mode contains only the lower-level pointer tuning parameters."/>
                                 </StackPanel>
                             </GroupBox>
@@ -1554,18 +1555,6 @@
                                     </Grid>
                                     <Slider x:Name="SlForceTouchEmulationDragLockoutDistance" Minimum="40" Maximum="400" SmallChange="10" LargeChange="10" IsSnapToTickEnabled="True" TickFrequency="10" ValueChanged="PointerSlider_Changed"/>
                                     <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0" Text="Available only on trackpads without hardware Force Touch (no pressure sensor). This does not change or interfere with real Force Touch hardware."/>
-                                </StackPanel>
-                            </GroupBox>
-
-                            <!-- Shared hard-tap timer for hardware and emulated Force Touch. -->
-                            <GroupBox x:Name="HardTapTimingGroup" Margin="0,12,0,0">
-                                <GroupBox.Header><TextBlock Text="Hard Tap timing" Style="{StaticResource SectionTitle}"/></GroupBox.Header>
-                                <StackPanel>
-                                    <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                        <TextBlock Style="{StaticResource SliderLabel}" Text="Hard Tap hold time" ToolTip="For hardware Force Touch, convert to a normal held click after this time, measured from physical button down. With emulation, Hard Tap can win before emulation fires; after emulation fires, this timer cannot create a second click."/>
-                                        <TextBlock x:Name="LblForceTouchHardTapHoldMs" Grid.Column="1" Style="{StaticResource SliderValue}"/>
-                                    </Grid>
-                                    <Slider x:Name="SlForceTouchHardTapHoldMs" Minimum="300" Maximum="3000" SmallChange="50" LargeChange="50" IsSnapToTickEnabled="True" TickFrequency="50" ValueChanged="PointerSlider_Changed"/>
                                 </StackPanel>
                             </GroupBox>
 

@@ -16,6 +16,9 @@
 // available everywhere without each file needing its own #include "Trace.h".
 #include "Trace.h"
 
+// Link to the haptic actuator driver (needs PDEVICE_CONTEXT from device.h).
+#include "HapticLink.h"
+
 #include <Hid.h>
 
 EXTERN_C_START
