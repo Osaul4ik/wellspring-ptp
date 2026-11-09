@@ -33,6 +33,9 @@ The Haptics settings now live in the same **Force Touch & Haptics** group as
 the Force Touch options. The group is shown only on trackpads with a pressure
 sensor.
 
+Defaults: Force Touch on, Force Touch action on with the context menu, haptic
+click on with the light waveform, Pressure needed 270, drag cancel on.
+
 **Pressure needed** is the single pressure threshold for the whole group: the
 Force Touch action (driver `ForceTapThreshold`) and the second haptic click both
 fire at exactly this value. There is no separate Force Touch threshold any more.

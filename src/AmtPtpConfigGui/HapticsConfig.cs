@@ -16,8 +16,8 @@ namespace AmtPtpConfigGui.Native
         public const int WaveformFirm = 1;
 
         public bool Enabled { get; set; } = true;
-        public int Threshold { get; set; } = 265;
-        public int Waveform { get; set; } = WaveformFirm;
+        public int Threshold { get; set; } = 270;
+        public int Waveform { get; set; } = WaveformLight;
 
         public static HapticsConfig Default => new HapticsConfig();
 

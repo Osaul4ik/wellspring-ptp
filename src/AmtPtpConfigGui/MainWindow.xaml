@@ -1487,7 +1487,7 @@
                                     <CheckBox x:Name="ChkHapticsEnabled" Style="{StaticResource OptionCheckBox}" Margin="0,14,0,4" Content="Enable second haptic click" Checked="ForceTouchOption_Changed" Unchecked="ForceTouchOption_Changed" ToolTip="While the trackpad is physically clicked and the finger has not moved past “Drag cancel distance”, pressing harder than “Pressure needed” plays a second haptic click, at the same moment as the Force Tap action. Played by the driver itself, so it also works when this app is closed. Turning this off does not change when the Force Tap action triggers."/>
                                     <Grid Style="{StaticResource SettingRow}" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <TextBlock Style="{StaticResource SliderLabel}" Text="Click waveform" ToolTip="Light and firm are captured actuator waveforms; they may feel alike on some units."/>
-                                        <ComboBox x:Name="CmbHapticsWaveform" Grid.Column="1" Width="120" SelectedIndex="1">
+                                        <ComboBox x:Name="CmbHapticsWaveform" Grid.Column="1" Width="120" SelectedIndex="0">
                                             <ComboBoxItem Content="Light"/>
                                             <ComboBoxItem Content="Firm"/>
                                         </ComboBox>

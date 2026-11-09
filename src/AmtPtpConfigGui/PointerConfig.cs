@@ -87,7 +87,7 @@ namespace AmtPtpConfigGui.Native
         public static PointerConfig Default => new PointerConfig
         {
             StructVersion = CurrentVersion,
-            ForceTapThreshold = 265,
+            ForceTapThreshold = 270,
             ForceTapAction = ActionContextMenu,
             ForceTouchEnabled = 1,
             RequirePressureToActivate = 1,
@@ -116,7 +116,7 @@ namespace AmtPtpConfigGui.Native
             ForceTouchEmulationDragLockoutDistance = 110,
             ForceTouchActionEnabled = 1,
             ForceTouchHapticEnabled = 1,
-            ForceTouchHapticWaveform = 1,
+            ForceTouchHapticWaveform = 0,
             ForceTapDragCancelEnabled = 1,
         };
 

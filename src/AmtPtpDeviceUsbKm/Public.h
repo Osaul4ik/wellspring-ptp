@@ -240,7 +240,7 @@ typedef struct _AMT_POINTER_CONFIG
 #define AMT_POINTER_CONFIG_DEFAULT_INIT                                    \
 {                                                                            \
     AMT_POINTER_CONFIG_VERSION,                                             \
-    265,                                                                    \
+    270,                                                                    \
     AMT_POINTER_ACTION_CONTEXT_MENU,                                        \
     1,                                                                      \
     1,                                                                      \
@@ -269,7 +269,7 @@ typedef struct _AMT_POINTER_CONFIG
     110,                                                                    \
     /* ForceTouchActionEnabled                 */ 1,                       \
     /* ForceTouchHapticEnabled                 */ 1,                       \
-    /* ForceTouchHapticWaveform                */ AMT_POINTER_HAPTIC_WAVEFORM_FIRM, \
+    /* ForceTouchHapticWaveform                */ AMT_POINTER_HAPTIC_WAVEFORM_LIGHT, \
     /* ForceTapDragCancelEnabled               */ 1                        \
 }
 

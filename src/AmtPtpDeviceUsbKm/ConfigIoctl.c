@@ -204,7 +204,7 @@ AmtPointerConfigClamp(_Inout_ PAMT_POINTER_CONFIG Config)
     Config->ForceTouchActionEnabled = Config->ForceTouchActionEnabled ? 1u : 0u;
     Config->ForceTouchHapticEnabled = Config->ForceTouchHapticEnabled ? 1u : 0u;
     if (Config->ForceTouchHapticWaveform > AMT_POINTER_HAPTIC_WAVEFORM_MAX)
-        Config->ForceTouchHapticWaveform = AMT_POINTER_HAPTIC_WAVEFORM_FIRM;
+        Config->ForceTouchHapticWaveform = AMT_POINTER_HAPTIC_WAVEFORM_LIGHT;
     Config->ForceTapDragCancelEnabled = Config->ForceTapDragCancelEnabled ? 1u : 0u;
     // Small-contact gates: two INDEPENDENT on/off flags (birth-only vs
     // continuous) - neither is forced off by the other being off. Each has

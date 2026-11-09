@@ -180,7 +180,7 @@ AmtHapticLinkOpen(
     }
 
     buffer->StructVersion = AMT_HAPTIC_INTERFACE_VERSION;
-    buffer->Waveform      = AMT_POINTER_HAPTIC_WAVEFORM_FIRM;
+    buffer->Waveform      = AMT_POINTER_HAPTIC_WAVEFORM_LIGHT;
 
     WdfSpinLockAcquire(Ctx->HapticLinkLock);
     InterlockedExchange(&Ctx->HapticSendBusy, 0);
