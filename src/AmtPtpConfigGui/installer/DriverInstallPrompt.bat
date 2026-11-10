@@ -26,13 +26,18 @@ rem Cert:\LocalMachine\* all require Administrator privileges.
 rem If not elevated yet, relaunch this same script with a UAC prompt,
 rem preserving the arguments and working folder, then exit this
 rem non-elevated instance.
+rem Paths go through delayed expansion (!VAR!) inside every ( ) block: a
+rem %VAR% is expanded BEFORE the block is parsed, so a ")" in the folder
+rem name - e.g. a browser's "WellspringPTP (1)" download folder - closed the
+rem block early and the script died with "... was unexpected at this time".
+set "SELF=%~f0"
 net session >nul 2>&1
 if errorlevel 1 (
     echo Requesting administrator privileges...
     set "ELEVATE_VBS=%TEMP%\wsp_elevate_%RANDOM%.vbs"
     > "!ELEVATE_VBS!" echo On Error Resume Next
-    >> "!ELEVATE_VBS!" echo Set UAC = CreateObject("Shell.Application")
-    >> "!ELEVATE_VBS!" echo UAC.ShellExecute "%~f0", "%DRVNAME% %MODE%", "%HERE%", "runas", 1
+    >> "!ELEVATE_VBS!" echo Set UAC = CreateObject("Shell.Application"^)
+    >> "!ELEVATE_VBS!" echo UAC.ShellExecute "!SELF!", "!DRVNAME! !MODE!", "!HERE!", "runas", 1
     cscript //nologo "!ELEVATE_VBS!"
     del "!ELEVATE_VBS!" >nul 2>&1
     goto END
@@ -103,15 +108,18 @@ if errorlevel 1 (
 
 if not exist "%CER%" (
     echo.
-    echo [ERROR] Certificate not found: %CER%
+    echo [ERROR] Certificate not found: !CER!
     echo.
     pause
     goto END
 )
 
 echo.
+rem Single quotes are doubled for the PowerShell '...' literal (a user or
+rem folder name like O'Brien otherwise broke the import).
+set "CERPS=!CER:'=''!"
 echo [2/5] Importing certificate into Trusted Root ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Certificate -FilePath '%CER%' -CertStoreLocation Cert:\LocalMachine\Root | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Certificate -FilePath '!CERPS!' -CertStoreLocation Cert:\LocalMachine\Root | Out-Null"
 if errorlevel 1 (
     echo.
     echo [ERROR] Failed to import the certificate into Trusted Root.
@@ -121,7 +129,7 @@ if errorlevel 1 (
 )
 
 echo [2/5] Importing certificate into Trusted Publishers ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Certificate -FilePath '%CER%' -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Certificate -FilePath '!CERPS!' -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null"
 if errorlevel 1 (
     echo.
     echo [ERROR] Failed to import the certificate into Trusted Publishers.
@@ -132,7 +140,7 @@ if errorlevel 1 (
 
 if not exist "%INF%" (
     echo.
-    echo [ERROR] Driver .inf not found: %INF%
+    echo [ERROR] Driver .inf not found: !INF!
     echo.
     pause
     goto END
@@ -158,7 +166,7 @@ if not "!RC!"=="0" if not "!RC!"=="3010" (
 
 echo.
 if exist "%HAPINF%" (
-    echo [4/5] Installing haptic actuator driver (pnputil) ...
+    echo [4/5] Installing haptic actuator driver ^(pnputil^) ...
     pnputil /add-driver "%HAPINF%" /install
     set "RC=!ERRORLEVEL!"
     if not "!RC!"=="0" if not "!RC!"=="3010" (

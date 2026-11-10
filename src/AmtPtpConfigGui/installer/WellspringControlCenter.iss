@@ -6,8 +6,9 @@
 ;  What it does:
 ;   - At the very start (right after the Welcome page) asks what to install:
 ;       1) GUI + Driver (default)
-;       2) GUI only
-;       3) Driver only
+;       2) Driver only
+;     (a GUI-only install is the separate WellspringControlCenter-Setup-*
+;     build, compiled without DriverSourceDir)
 ;     Only shown when the build actually embeds a driver (see IncludeDriver
 ;     below) - a GUI-only build behaves exactly like before, no page shown.
 ;   - When the build also embeds the haptic actuator driver (see
@@ -273,8 +274,7 @@ end;
 #ifdef IncludeDriver
 // "What to install" page, shown right after the Welcome page - only
 // present in builds that actually embed a driver. Exclusive radio-button
-// style list (True = exclusive): 0 = GUI + Driver, 1 = GUI only,
-// 2 = Driver only.
+// style list (True = exclusive): 0 = GUI + Driver, 1 = Driver only.
 procedure InitializeWizard();
 begin
   InstallChoicePage := CreateInputOptionPage(wpWelcome,
@@ -387,6 +387,17 @@ end;
 // English no matter the UI language. Without -All it only lists published
 // third-party (oemNN.inf) packages - exactly where our drivers appear - so
 // it doesn't enumerate thousands of inbox packages.
+// Returns S ready to be placed inside a PowerShell '...' literal: single
+// quotes are doubled. {tmp} lives under the user's profile, so a user name
+// such as O'Brien otherwise ended the literal early - the listing below
+// silently found nothing and Import-Certificate failed, aborting the whole
+// driver install.
+function PsQuote(const S: String): String;
+begin
+  Result := S;
+  StringChangeEx(Result, '''', '''''', True);
+end;
+
 procedure RemovePackagesByInf(const InfName, ListTag: String; ShowStatus: Boolean);
 var
   ResultCode: Integer;
@@ -402,7 +413,7 @@ begin
     '"Get-WindowsDriver -Online | ' +
     'Where-Object { $_.OriginalFileName -like ''*' + InfName + ''' } | ' +
     'Select-Object -ExpandProperty Driver | ' +
-    'Set-Content -Path ''' + ListFile + ''' -Encoding ascii"';
+    'Set-Content -Path ''' + PsQuote(ListFile) + ''' -Encoding ascii"';
   // Best-effort: if listing fails, there is nothing we can safely remove.
   if (not Exec('powershell.exe', PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode))
      or (ResultCode <> 0) or (not FileExists(ListFile)) then
@@ -486,8 +497,6 @@ begin
   Cer := ExpandConstant('{tmp}\{#DriverName}.cer');
   Ok := True;
 
-  RemoveOldDriverVersions;
-
   WizardForm.StatusLabel.Caption := 'Enabling Windows Test Mode...';
   if (not Exec(ExpandConstant('{sys}\bcdedit.exe'), '/set testsigning on', '',
        SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
@@ -509,7 +518,7 @@ begin
     WizardForm.StatusLabel.Caption := 'Importing certificate (Trusted Root)...';
     if (not Exec('powershell.exe',
          '-NoProfile -ExecutionPolicy Bypass -Command "Import-Certificate -FilePath ''' +
-         Cer + ''' -CertStoreLocation Cert:\LocalMachine\Root | Out-Null"',
+         PsQuote(Cer) + ''' -CertStoreLocation Cert:\LocalMachine\Root | Out-Null"',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     begin
       MsgBox('Failed to import the certificate into Trusted Root.', mbError, MB_OK);
@@ -522,7 +531,7 @@ begin
     WizardForm.StatusLabel.Caption := 'Importing certificate (Trusted Publishers)...';
     if (not Exec('powershell.exe',
          '-NoProfile -ExecutionPolicy Bypass -Command "Import-Certificate -FilePath ''' +
-         Cer + ''' -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null"',
+         PsQuote(Cer) + ''' -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null"',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     begin
       MsgBox('Failed to import the certificate into Trusted Publishers.', mbError, MB_OK);
@@ -535,6 +544,15 @@ begin
     MsgBox('Driver .inf not found: ' + Inf, mbError, MB_OK);
     Ok := False;
   end;
+
+  // BUG FIX: the previous driver used to be removed FIRST, before Test
+  // Mode / certificate / .inf were checked. Any of those failing then left
+  // the touchpad with the old driver gone and the new one not installed
+  // (and no rescan) - dead until the next reboot. Remove it only once the
+  // new package is known to be installable, right before adding it
+  // (same order as DriverInstallPrompt.bat).
+  if Ok then
+    RemoveOldDriverVersions;
 
   if Ok then
   begin
@@ -589,6 +607,17 @@ end;
 // confirmation and run the steps in-process. Inno Setup deletes everything
 // it extracted to {tmp} when Setup exits, whether the driver install
 // succeeds, is declined, or fails - no manual cleanup needed here.
+// Step 4 of the confirmation below. It used to always promise an automatic
+// restart, even when the user had ticked "do NOT restart my PC".
+function RebootStepText(): String;
+begin
+  if NoAutoRebootCheckBox.Checked then
+    Result := '  4. Leave the restart to you - the driver may not be bound to' + #13#10 +
+              '     the touchpad until you restart Windows.'
+  else
+    Result := '  4. Automatically close Setup and restart the computer to finish.';
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -616,7 +645,7 @@ begin
       #else
       '  3. Install the {#DriverName} driver (pnputil).' + #13#10 +
       #endif
-      '  4. Automatically close Setup and restart the computer to finish.' + #13#10#13#10 +
+      RebootStepText() + #13#10#13#10 +
       'Save any open work before continuing.',
       mbConfirmation, MB_YESNO) = IDYES then
       InstallDriverNow;
