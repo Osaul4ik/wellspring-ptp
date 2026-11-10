@@ -93,6 +93,23 @@ AmtMatchBuildCandidates(
 // estimate - validate with the live monitor and adjust if needed.
 #define MATCH_BIRTH_PROXIMITY_DELTA 1500
 
+// Jump test (AmtMatchCorrespond): how far a tracked contact may move between
+// two frames, given how fast it was already moving.
+//
+//   limit = (MATCH_JUMP_FROM_REST + MATCH_JUMP_SPEED_FACTOR * lastStep)
+//           * elapsed frames (MATCH_NOMINAL_FRAME_MS each, at most
+//             MATCH_JUMP_MAX_FRAMES), capped at MATCH_MAX_CONTINUATION_DELTA
+//
+// A resting or tapping finger has lastStep ~0, so it may only move ~7 mm in
+// one frame; a finger in a fast swipe keeps its larger allowance. This is
+// what stops finger B, landing in the very frame finger A lifts, from being
+// taken as A having moved (cursor teleport on fast alternating taps): only
+// the continuation delta bounded that before, and it spans ~4 cm.
+#define MATCH_JUMP_FROM_REST       700   // sensor units (~7 mm) per frame
+#define MATCH_JUMP_SPEED_FACTOR      2   // accel. allowance over last step
+#define MATCH_NOMINAL_FRAME_MS       8
+#define MATCH_JUMP_MAX_FRAMES        4
+
 // Max time gap for same-ContactID continuation (150ms).
 #define MATCH_MAX_TIME_DELTA_100NS (150LL * 10000LL)
 
@@ -101,12 +118,17 @@ AmtMatchBuildCandidates(
 // cached once in DEVICE_CONTEXT at D0Entry - MICRO-OPT, avoids recomputing
 // this 64-bit multiply+divide on every accepted match. 0 means "no usable
 // clock", same fail-closed behavior as the old PerfFrequencyHz<=0 check.
+// Motion/JumpLimit: optional jump test (see MATCH_JUMP_FROM_REST). A pair is
+// rejected when the candidate is farther than JumpLimit[p] from Motion's last
+// raw position of pool entry p. NULL disables the test.
 VOID
 AmtMatchCorrespond(
     _In_  const MATCH_CANDIDATE_SET*               Candidates,
     _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT*  Pool,
     _In_  LONGLONG                                  NowQpc,
     _In_  LONGLONG                                  MaxTicks,
+    _In_opt_ const AMT_POOL_MOTION*                 Motion,
+    _In_reads_opt_(MAX_CONTACTS) const USHORT*      JumpLimit,
     _Out_ MATCH_RESULT*                              OutResult
 );
 

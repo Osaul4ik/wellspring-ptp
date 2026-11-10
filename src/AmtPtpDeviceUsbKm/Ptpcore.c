@@ -437,10 +437,39 @@ PTPCore_ProcessFrame(
         }
     }
 
+    // Per-entry jump limit for the matcher (see MATCH_JUMP_FROM_REST).
+    // Entries with no motion history yet (born last frame is fine - its
+    // LastRaw is the birth position) or frozen under a palm / in the edge
+    // zone (not updated while frozen, so their last raw position is stale)
+    // keep the plain continuation delta, exactly as before.
+    USHORT jumpLimit[MAX_CONTACTS];
+    {
+        const LONGLONG frameTicks =
+            (pCtx->PerfFrequency.QuadPart * MATCH_NOMINAL_FRAME_MS) / 1000;
+        for (size_t jp = 0; jp < MAX_CONTACTS; jp++) {
+            const ACTIVE_CONTACT* je = &pCtx->ActiveContacts[jp];
+            jumpLimit[jp] = MATCH_MAX_CONTINUATION_DELTA;
+            if (je->State != CONTACT_ACTIVE || je->PalmFrozen ||
+                je->LastSeenQpc == 0 || frameTicks <= 0)
+                continue;
+
+            LONGLONG frames = (NowQpc - je->LastSeenQpc + frameTicks / 2) / frameTicks;
+            if (frames < 1) frames = 1;
+            if (frames > MATCH_JUMP_MAX_FRAMES) frames = MATCH_JUMP_MAX_FRAMES;
+
+            LONGLONG limit = ((LONGLONG)MATCH_JUMP_FROM_REST +
+                              (LONGLONG)MATCH_JUMP_SPEED_FACTOR *
+                                  pCtx->PoolMotion.LastStep[jp]) * frames;
+            if (limit < MATCH_MAX_CONTINUATION_DELTA)
+                jumpLimit[jp] = (USHORT)limit;
+        }
+    }
+
     // Cost-based correspondence
     MATCH_RESULT matchResult;
     AmtMatchCorrespond(&candidates, pCtx->ActiveContacts,
                        NowQpc, pCtx->MatchMaxTimeDeltaTicks,
+                       &pCtx->PoolMotion, jumpLimit,
                        &matchResult);
 
     // FIX: an Unconfirmed candidate (new, below-tip-threshold, no pool
@@ -952,6 +981,22 @@ PTPCore_ProcessFrame(
 
         if (shouldTaint) {
             c->WasInGesture = TRUE;
+        }
+
+        // Raw motion history for the next frame's jump test. A contact
+        // that just started (birth, rebind, palm re-seed) has no step yet.
+        {
+            PAMT_POOL_MOTION pm = &pCtx->PoolMotion;
+            USHORT step = 0;
+            if (!justBorn) {
+                INT sdx = AmtAbsDelta((INT)cand->X, (INT)pm->LastRawX[p]);
+                INT sdy = AmtAbsDelta((INT)cand->Y, (INT)pm->LastRawY[p]);
+                INT smax = (sdx > sdy) ? sdx : sdy;
+                step = (USHORT)((smax > 0xFFFF) ? 0xFFFF : smax);
+            }
+            pm->LastRawX[p] = cand->X;
+            pm->LastRawY[p] = cand->Y;
+            pm->LastStep[p] = step;
         }
 
         USHORT repX, repY;

@@ -231,6 +231,17 @@ C_ASSERT(sizeof(ACTIVE_CONTACT) == 64);
 
 #define MAX_CONTACTS PTP_MAX_CONTACT_POINTS  // pool capacity, not slot count
 
+// Per pool slot raw-motion history used by the matcher's jump test
+// (AmtMatchCorrespond). Lives in DEVICE_CONTEXT, not in ACTIVE_CONTACT,
+// which is exactly one cache line already. Indexed by pool slot; written in
+// PTPCore Phase C for every contact that was reported this frame.
+typedef struct _AMT_POOL_MOTION
+{
+    USHORT LastRawX[MAX_CONTACTS];  // raw candidate position last frame
+    USHORT LastRawY[MAX_CONTACTS];
+    USHORT LastStep[MAX_CONTACTS];  // max(|dx|,|dy|) of last frame's raw step
+} AMT_POOL_MOTION, *PAMT_POOL_MOTION;
+
 // Zero/FREE-initialise the whole pool. Call at device creation and D0Entry.
 VOID
 AmtContactPoolInit(_Out_writes_(MAX_CONTACTS) PACTIVE_CONTACT Pool);

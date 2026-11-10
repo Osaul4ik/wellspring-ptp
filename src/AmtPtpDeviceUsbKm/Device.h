@@ -508,6 +508,9 @@ typedef struct _DEVICE_CONTEXT
     // the origin. The "both fingers moved" test for ScrollModeLatched is
     // measured from here, not from the per-frame deadzone anchor.
     ULONG         ScrollModeOriginId[MAX_CONTACTS];
+    // Raw motion per pool slot for the matcher's jump test (Match.h,
+    // MATCH_JUMP_FROM_REST). Written in PTPCore Phase C.
+    AMT_POOL_MOTION PoolMotion;
     USHORT        ScrollModeOriginX[MAX_CONTACTS];
     USHORT        ScrollModeOriginY[MAX_CONTACTS];
 

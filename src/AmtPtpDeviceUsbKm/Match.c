@@ -419,6 +419,8 @@ AmtMatchCorrespond(
     _In_reads_(MAX_CONTACTS) const ACTIVE_CONTACT*  Pool,
     _In_  LONGLONG                                  NowQpc,
     _In_  LONGLONG                                  MaxTicks,
+    _In_opt_ const AMT_POOL_MOTION*                 Motion,
+    _In_reads_opt_(MAX_CONTACTS) const USHORT*      JumpLimit,
     _Out_ MATCH_RESULT*                              OutResult
 )
 {
@@ -554,7 +556,24 @@ AmtMatchCorrespond(
         // forcing a spurious lift+rebirth (broken drag / interrupted
         // gesture / dropped tap). poolClaimed[p] stays untouched so the
         // rejected pool entry remains available to other candidates.
-        if (spatialReject || timeReject) {
+        // BUG FIX (cursor teleport on fast alternating taps): finger A lifts
+        // and finger B lands elsewhere in the SAME frame. A's entry is then
+        // unclaimed and B lies within the (very generous) continuation delta,
+        // so B was matched as A having moved there - one contact jumping
+        // centimetres in a frame, i.e. a cursor teleport and a lost tap.
+        // Bound the jump by what this contact's own recent motion makes
+        // plausible (see MATCH_JUMP_FROM_REST). A rejected pair falls through
+        // like the other rejections: A lifts (UP) and B is born (DOWN).
+        BOOLEAN jumpReject = FALSE;
+        if (Motion != NULL && JumpLimit != NULL) {
+            const MATCH_CANDIDATE* jc = &Candidates->Candidates[ci];
+            INT jdx = AmtAbsDelta((INT)jc->X, (INT)Motion->LastRawX[p]);
+            INT jdy = AmtAbsDelta((INT)jc->Y, (INT)Motion->LastRawY[p]);
+            INT jmax = (jdx > jdy) ? jdx : jdy;
+            jumpReject = (jmax > (INT)JumpLimit[p]);
+        }
+
+        if (spatialReject || timeReject || jumpReject) {
             continue;
         }
 
