@@ -72,7 +72,7 @@ the Force Touch options. The group is shown only on trackpads with a pressure
 sensor.
 
 Defaults: Force Touch on, Force Touch action on with the context menu, haptic
-click on with the light waveform, Pressure needed 270, drag cancel on.
+click on with the light waveform, Pressure needed 270.
 
 **Pressure needed** is the single pressure threshold for the whole group: the
 Force Touch action (driver `ForceTapThreshold`) and the second haptic click both
@@ -94,11 +94,7 @@ If the finger moves past the drag-cancel distance first, the press is an
 ordinary click or drag: no haptic click and no Force Tap. A Force Tap that has
 already fired stays committed.
 
-**Drag cancel** can be switched off in the same group (the slider greys out).
-Then movement never cancels: a hard press fires the haptic click and the Force
-Tap wherever the finger is, and the ordinary click is only reported on release,
-so click-and-drag does not work while Force Touch is active. It is stored in
-the registry like the other values.
+Drag cancel is always on; only its distance is adjustable.
 
 Trade-off: while a press is undecided the ordinary button-down is held back, so
 a click-and-hold only starts (as a drag) once the finger moves past the

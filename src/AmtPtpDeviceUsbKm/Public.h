@@ -189,10 +189,10 @@ typedef struct _AMT_POINTER_CONFIG
     // Hardware path only. 1 (default): moving the finger past
     // ForceTapDragLockoutDistance before the press is recognised cancels the
     // Force Tap and the haptic click (the press becomes an ordinary click or
-    // drag). 0: movement never cancels, so a hard press fires the Force Tap
-    // and the haptic click wherever the finger is; the ordinary button-down is
-    // then only reported on release, i.e. click-and-drag is not possible while
-    // Force Touch is active.
+    // drag). DEPRECATED: drag cancel is always on - the driver forces this to
+    // 1 on every config write and no longer reads it. The field stays so the
+    // struct layout, AMT_POINTER_CONFIG_VERSION and registry values do not
+    // change.
     ULONG ForceTapDragCancelEnabled;
 } AMT_POINTER_CONFIG, *PAMT_POINTER_CONFIG;
 

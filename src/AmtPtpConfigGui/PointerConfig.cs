@@ -59,8 +59,9 @@ namespace AmtPtpConfigGui.Native
         public uint ForceTouchHapticEnabled;
         public uint ForceTouchHapticWaveform;
 
-        // 1: movement past ForceTapDragLockoutDistance cancels Force Tap and
-        // the haptic click; 0: drag cancel is off. See Public.h.
+        // Deprecated: drag cancel is always on (movement past
+        // ForceTapDragLockoutDistance cancels Force Tap and the haptic click).
+        // Kept for struct layout; always 1. See Public.h.
         public uint ForceTapDragCancelEnabled;
 
         // 14: ForceTouchHardTapHoldMs removed; haptic fields added.
@@ -249,7 +250,7 @@ namespace AmtPtpConfigGui.Native
             c.ForceTouchActionEnabled = c.ForceTouchActionEnabled != 0 ? 1u : 0u;
             c.ForceTouchHapticEnabled = c.ForceTouchHapticEnabled != 0 ? 1u : 0u;
             if (c.ForceTouchHapticWaveform > HapticWaveformMax) c.ForceTouchHapticWaveform = HapticWaveformMax;
-            c.ForceTapDragCancelEnabled = c.ForceTapDragCancelEnabled != 0 ? 1u : 0u;
+            c.ForceTapDragCancelEnabled = 1u; // always on, no longer user-switchable
             // Two INDEPENDENT small-contact gates per device kind - neither
             // flag forces the other off. Each has its own "M" threshold.
             c.SmallContactRejectionEnabled = c.SmallContactRejectionEnabled != 0 ? 1u : 0u;

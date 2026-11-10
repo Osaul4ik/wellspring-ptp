@@ -1152,13 +1152,10 @@ PTPCore_ProcessFrame(
                 // pressure is released) is ignored.
                 INT adx = (bestDx < 0) ? -bestDx : bestDx;
                 INT ady = (bestDy < 0) ? -bestDy : bestDy;
-                // Hardware path: the user can switch drag cancel off entirely
-                // (ForceTapDragCancelEnabled == 0), in which case movement
-                // never cancels the press.
-                const BOOLEAN dragCancelOn = !forceTouchHardwareActive ||
-                    pCtx->PointerConfig.ForceTapDragCancelEnabled;
-                if (dragCancelOn &&
-                    (adx > dragLockoutDistance || ady > dragLockoutDistance) &&
+                // Drag cancel is always on (ForceTapDragCancelEnabled is
+                // kept in AMT_POINTER_CONFIG only for layout/registry
+                // compatibility and is forced to 1 - see ConfigIoctl.c).
+                if ((adx > dragLockoutDistance || ady > dragLockoutDistance) &&
                     pCtx->ClickArbitrationState != CLICK_ARBITRATION_FORCE_TOUCH) {
                     pCtx->ForceTouchDragLockout = TRUE;
                 }

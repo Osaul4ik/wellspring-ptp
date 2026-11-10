@@ -2460,7 +2460,6 @@ namespace AmtPtpConfigGui
                     cfg.ForceTapThreshold, PointerConfig.ThresholdMin, PointerConfig.ThresholdMax);
                 ChkHapticsEnabled.IsChecked = cfg.ForceTouchHapticEnabled != 0;
                 CmbHapticsWaveform.SelectedIndex = cfg.ForceTouchHapticWaveform == 0 ? 0 : 1;
-                ChkForceTapDragCancel.IsChecked = cfg.ForceTapDragCancelEnabled != 0;
                 SlForceTapDragLockoutDistance.Value = cfg.ForceTapDragLockoutDistance;
                 ChkForceTouchEnabled.IsChecked = cfg.ForceTouchEnabled != 0;
                 ChkRequirePressure.IsChecked = cfg.RequirePressureToActivate != 0;
@@ -2535,7 +2534,7 @@ namespace AmtPtpConfigGui
             // haptics "Pressure needed" value.
             c.ForceTapThreshold = (uint)Math.Round(SlHapticsThreshold.Value);
             c.ForceTapDragLockoutDistance = (uint)SlForceTapDragLockoutDistance.Value;
-            c.ForceTapDragCancelEnabled = ChkForceTapDragCancel.IsChecked == true ? 1u : 0u;
+            c.ForceTapDragCancelEnabled = 1u; // drag cancel is always on
             c.ForceTouchHapticEnabled = ChkHapticsEnabled.IsChecked == true ? 1u : 0u;
             c.ForceTouchHapticWaveform = CmbHapticsWaveform.SelectedIndex == 0 ? 0u : 1u;
             c.ForceTouchEnabled = ChkForceTouchEnabled.IsChecked == true ? 1u : 0u;
@@ -2626,7 +2625,6 @@ namespace AmtPtpConfigGui
                 ChkRequirePressureContinuously == null ||
                 SlForceTapDragLockoutDistance == null ||
                 ChkHapticsEnabled == null ||
-                ChkForceTapDragCancel == null ||
                 ForceTapActionPanel == null ||
                 LblForceTapAction == null)
                 return;
@@ -2643,8 +2641,7 @@ namespace AmtPtpConfigGui
             // haptic click, so the drag-cancel distance applies to either.
             bool pressActive =
                 master && (ChkForceTouchAction.IsChecked == true || ChkHapticsEnabled.IsChecked == true);
-            ChkForceTapDragCancel.IsEnabled = pressActive;
-            SlForceTapDragLockoutDistance.IsEnabled = pressActive && ChkForceTapDragCancel.IsChecked == true;
+            SlForceTapDragLockoutDistance.IsEnabled = pressActive;
             ForceTapActionPanel.IsEnabled = action;
             LblForceTapAction.IsEnabled = action;
         }
