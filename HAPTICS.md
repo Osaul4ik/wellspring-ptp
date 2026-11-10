@@ -21,14 +21,52 @@ hardware**. Other models are not enabled by the INF.
   independent of the touchpad driver: the touchpad driver filters `MI_02`, this
   one owns `MI_03`. Its only job is to play a fixed click waveform on request.
 - Control Center (`src/AmtPtpConfigGui`): the settings, the live pressure
-  meter, the actuator status and the Test click (`HapticsEngine.cs`).
+  meter, the status line and the Test click (`HapticsEngine.cs`). It only
+  observes and assists; it plays nothing on a hard press.
+
+### The link between the two drivers (`HapticLink.c`)
+
+- **One contract.** `HapticLink.c` includes the actuator driver's own
+  `Public.h`; there is no hand-made mirror of the GUID/IOCTL/structure on the
+  kernel side. (`HapticsActuator.cs` still mirrors it for user mode.)
+- **States** (`AMT_HAPTIC_LINK_STATE_*` in the touchpad driver's `Public.h`):
+  `ABSENT` (no actuator interface), `READY` (open, clicks are sent), `CLOSED`
+  (the actuator is being removed, or a re-open after a cancelled removal
+  failed; the next interface arrival replaces the target) and `INCOMPATIBLE`
+  (the actuator driver answered `STATUS_REVISION_MISMATCH`).
+- **A haptic click that cannot be played is treated as switched off.** The frame
+  path takes one snapshot per frame (`ForceTouchHapticActive` = haptic click on
+  AND link `READY`). Only then does the haptic click keep the hard-press
+  arbitration running. Without this, "haptic click on, Force Touch action off"
+  on a model the actuator driver does not bind to would hold every button-down
+  back and swallow hard presses completely - for a click that never comes.
+- **No allocation on the click path.** The request is created and formatted once
+  when the link opens (PASSIVE_LEVEL); a click only re-formats it.
+- **Diagnostics.** `IOCTL_AMT_PTP_GET_HAPTIC_LINK_INFO` returns the state and
+  counters (requested / delivered / throttled / failed / dropped, last status).
+  Control Center uses it for the status line; with a touchpad driver that
+  predates the IOCTL it falls back to probing the actuator interface.
 
 ## Settings
 
-Haptic settings are part of the **profile**, like Palm, Pointer and Scroll:
-they follow profile switching, **Reset to defaults**, profile export/import and
-backup/restore, and they are applied by the bottom-bar **Save**. A profile or
-file written before haptics existed keeps the current haptic settings on load.
+Haptic settings are ordinary driver configuration: three fields of the pointer
+config (`ForceTapThreshold`, `ForceTouchHapticEnabled`,
+`ForceTouchHapticWaveform`). They therefore follow profile switching, **Reset to
+defaults**, profile export/import and backup/restore together with the rest of
+the Pointer settings, and are applied by the bottom-bar **Save**.
+
+There is no separate "Haptics" object in profiles, profile files (format 4) or
+backups any more - the pointer config is the single source of truth. Files
+written while Control Center played the click itself still load: the old
+object's on/off switch and waveform are folded into the pointer config by
+`PointerConfig.Migrate`, which is also the one place that knows the pointer
+config's version history (profile store, profile files and backups all go
+through it). The old object's separate haptic threshold is not migrated; the
+profile's own `ForceTapThreshold` stays.
+
+The status line under the settings reflects the driver's **applied**
+configuration and its link to the actuator driver, not the controls: an edit
+counts once it has been saved.
 The Haptics settings now live in the same **Force Touch & Haptics** group as
 the Force Touch options. The group is shown only on trackpads with a pressure
 sensor.
@@ -98,20 +136,35 @@ and is unchanged.
 The driver is organised like the touchpad driver (`Driver`, `Device`, `Queue`,
 `Trace`, `Public`) plus `Actuator.c`, which holds everything hardware-specific.
 
-- **Interface contract** (`Public.h`, mirrored in `HapticsActuator.cs` and in the
-  touchpad driver's `HapticLink.h`): a device
+- **Interface contract** (`Public.h`, included directly by the touchpad
+  driver's `HapticLink.c` and mirrored in `HapticsActuator.cs`): a device
   interface GUID and two IOCTLs, `GET_INFO` and `CLICK`, with versioned
   structures. Control Center checks the driver's interface version when it opens
-  the device and refuses a driver built from a different revision.
+  the device and refuses a driver built from a different revision; the touchpad
+  driver stops sending after the first `STATUS_REVISION_MISMATCH`.
+- **Nobody parks a handle on it.** Control Center opens the interface, sends one
+  or two IOCTLs and closes it again (status probe, Test click). An open
+  user-mode handle would make a driver update fail and, after the trackpad drops
+  off the bus across sleep, would keep the old device instance from being
+  deleted - and the same instance from coming back. The touchpad driver's link
+  does keep it open, but handles query-remove / remove through its I/O target.
 - **Identification**: it sends nothing to a device it has not positively
   identified (supported vendor/product, exactly one interface, interface number
   3, HID class). Supported products are one table in `Actuator.c`; the INF lists
   the same IDs. Only `05AC:0340` (MacBookPro16,1) is enabled - add a model only
   after confirming it exposes the actuator on `MI_03` and accepts these reports.
 - **Click path**: the click is an asynchronous HID SET_REPORT on a request and
-  buffer allocated once, so a click allocates nothing and cannot fail for lack of
-  memory. Clicks closer than 100 ms are refused with `STATUS_DEVICE_BUSY`
-  (flow control: the actuator is not a toy to hammer).
+  buffer created once in `EvtDevicePrepareHardware` (`AmtHapticPrepareTransfer`)
+  for the USB target and formatted once there, so the IRP, the framework's USB
+  context and the URB all exist before the first click: a click allocates
+  nothing and cannot fail for lack of memory. Clicks closer than 100 ms are
+  refused with `STATUS_DEVICE_BUSY` (flow control: the actuator is not a toy to
+  hammer); a click that failed before reaching the device does not start that
+  cool-down.
+- **Execution level**: the default (callbacks at IRQL <= DISPATCH_LEVEL). The
+  touchpad driver sends its click from its USB completion path; with a
+  passive-level device every such click would first be handed to a system worker
+  thread, adding scheduling latency to the haptic response.
 - **Power and removal**: no idle power management (the first click after an idle
   suspend would pay resume latency). `EvtIoStop` cancels an in-flight transfer on
   removal and lets it finish across a suspend.

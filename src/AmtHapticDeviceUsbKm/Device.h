@@ -11,10 +11,11 @@ typedef struct _DEVICE_CONTEXT
     WDFUSBINTERFACE UsbInterface;
     UCHAR           InterfaceNumber;
 
-    // Reused for every click (Actuator.c). TransferRequestNeedsReuse is set
-    // when the request has to be reset before its next use, i.e. after a send
-    // that failed synchronously or a reset that failed in the completion
-    // routine.
+    // Reused for every click (Actuator.c); created by AmtHapticPrepareTransfer
+    // on the first start, NULL before that. TransferRequestNeedsReuse is set
+    // when the request has to be reset before its next use, i.e. after the
+    // priming format in AmtHapticPrepareTransfer, a send that failed
+    // synchronously or a reset that failed in the completion routine.
     WDFREQUEST      TransferRequest;
     WDFMEMORY       ReportMemory;
     BOOLEAN         TransferRequestNeedsReuse;

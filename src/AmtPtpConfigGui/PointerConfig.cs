@@ -120,6 +120,123 @@ namespace AmtPtpConfigGui.Native
             ForceTapDragCancelEnabled = 1,
         };
 
+        /// <summary>
+        /// Brings a config saved by any earlier build (profile store, profile
+        /// file, backup) up to CurrentVersion: fields that did not exist in
+        /// the saved version arrive as zero and get the current defaults, then
+        /// everything is clamped. A config that was never saved
+        /// (StructVersion 0) becomes Default.
+        ///
+        /// This is the ONE place that knows the version history. It used to be
+        /// written out twice (profile store and file/backup loading) and the
+        /// two copies had drifted apart - one of them forgot the fields added
+        /// in versions 8 and 9, so such a profile came back with the Force
+        /// Touch emulation off and a 40-unit drag-cancel distance.
+        /// </summary>
+        /// <param name="cfg">The config as deserialized.</param>
+        /// <param name="legacyHaptics">
+        /// The "Haptics" object stored next to it by builds in which this app
+        /// played the second click itself, or null if there was none.
+        /// </param>
+        public static PointerConfig Migrate(PointerConfig cfg, HapticsConfig? legacyHaptics = null)
+        {
+            if (cfg.StructVersion == 0)
+                return Default;
+
+            if (cfg.StructVersion < CurrentVersion)
+            {
+                PointerConfig defaults = Default;
+
+                if (cfg.StructVersion < 3)
+                {
+                    cfg.CursorDeadzoneSlow = defaults.CursorDeadzoneSlow;
+                    cfg.CursorDeadzoneFast = defaults.CursorDeadzoneFast;
+                    cfg.SmoothingAlphaDen = defaults.SmoothingAlphaDen;
+                    cfg.SmoothingAlphaNumSlow = defaults.SmoothingAlphaNumSlow;
+                }
+
+                // 3 -> 4: Force Touch master switch and the pressure gate.
+                if (cfg.StructVersion < 4)
+                {
+                    cfg.ForceTouchEnabled = defaults.ForceTouchEnabled;
+                    cfg.RequirePressureToActivate = defaults.RequirePressureToActivate;
+                }
+
+                // 4 -> 5: non-Force-Touch small-contact rejection.
+                if (cfg.StructVersion < 5)
+                    cfg.SmallContactRejectionEnabled = defaults.SmallContactRejectionEnabled;
+
+                // 5 -> 6: the continuous small-contact gate.
+                if (cfg.StructVersion < 6)
+                    cfg.SmallContactRejectionStrict = defaults.SmallContactRejectionStrict;
+
+                // 6 -> 7: the continuous Force Touch pressure gate.
+                if (cfg.StructVersion < 7)
+                    cfg.RequirePressureContinuously = defaults.RequirePressureContinuously;
+
+                // 7 -> 8: Force Touch emulation.
+                if (cfg.StructVersion < 8)
+                {
+                    cfg.ForceTouchEmulationEnabled = defaults.ForceTouchEmulationEnabled;
+                    cfg.ForceTouchEmulationAction = defaults.ForceTouchEmulationAction;
+                    cfg.ForceTouchEmulationHoldMs = defaults.ForceTouchEmulationHoldMs;
+                }
+
+                // 8 -> 9: the two drag-cancel distances.
+                if (cfg.StructVersion < 9)
+                {
+                    cfg.ForceTapDragLockoutDistance = defaults.ForceTapDragLockoutDistance;
+                    cfg.ForceTouchEmulationDragLockoutDistance = defaults.ForceTouchEmulationDragLockoutDistance;
+                }
+
+                // 9 -> 10: tunable continuous-gate "M" threshold, and the
+                // mirrored small-contact gate for Force Touch devices.
+                if (cfg.StructVersion < 10)
+                {
+                    cfg.SmallContactMajorThreshold = defaults.SmallContactMajorThreshold;
+                    cfg.ForceTouchSmallContactRejectionEnabled = defaults.ForceTouchSmallContactRejectionEnabled;
+                    cfg.ForceTouchSmallContactRejectionStrict = defaults.ForceTouchSmallContactRejectionStrict;
+                    cfg.ForceTouchSmallContactMajorThreshold = defaults.ForceTouchSmallContactMajorThreshold;
+                }
+
+                // 10 -> 11: birth-only gates get their own "M" thresholds.
+                if (cfg.StructVersion < 11)
+                {
+                    cfg.SmallContactBirthMajorThreshold = defaults.SmallContactBirthMajorThreshold;
+                    cfg.ForceTouchSmallContactBirthMajorThreshold = defaults.ForceTouchSmallContactBirthMajorThreshold;
+                }
+
+                // 11 -> 12: the Force Touch action became its own switch.
+                if (cfg.StructVersion < 12)
+                    cfg.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
+
+                // 13 -> 14: the hard-tap hold time is gone and the second
+                // haptic click moved into the driver. If this app was playing
+                // it for this profile, carry its on/off switch and waveform
+                // over so the driver keeps doing what the app did; otherwise
+                // adopt the defaults. The pressure threshold stays the
+                // config's own ForceTapThreshold (see HapticsConfig.Threshold).
+                if (cfg.StructVersion < 14)
+                {
+                    if (legacyHaptics != null)
+                    {
+                        cfg.ForceTouchHapticEnabled = legacyHaptics.Enabled ? 1u : 0u;
+                        cfg.ForceTouchHapticWaveform =
+                            legacyHaptics.Waveform == HapticsConfig.WaveformFirm ? 1u : 0u;
+                    }
+                    else
+                    {
+                        cfg.ForceTouchHapticEnabled = defaults.ForceTouchHapticEnabled;
+                        cfg.ForceTouchHapticWaveform = defaults.ForceTouchHapticWaveform;
+                    }
+
+                    cfg.ForceTapDragCancelEnabled = defaults.ForceTapDragCancelEnabled;
+                }
+            }
+
+            return cfg.Clamped();
+        }
+
         public PointerConfig Clamped()
         {
             PointerConfig c = this;
@@ -182,4 +299,4 @@ namespace AmtPtpConfigGui.Native
             return Clamp(v, min, max);
         }
     }
-}
+}

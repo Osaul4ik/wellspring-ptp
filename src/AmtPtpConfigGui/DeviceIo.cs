@@ -21,6 +21,34 @@ namespace AmtPtpConfigGui.Native
         public byte Reserved2;
     }
 
+    /// <summary>
+    /// AMT_HAPTIC_LINK_INFO (Public.h): the touchpad driver's link to the
+    /// haptic actuator driver and what happened to the clicks it asked for.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HapticLinkInfo
+    {
+        public uint StructVersion;
+        public uint State;
+        public uint ClicksRequested;
+        public uint ClicksDelivered;
+        public uint ClicksThrottled;
+        public uint ClicksFailed;
+        public uint ClicksDropped;
+        public int LastStatus;
+        public uint Reserved0;
+        public uint Reserved1;
+        public uint Reserved2;
+        public uint Reserved3;
+
+        // Must match AMT_HAPTIC_LINK_INFO_VERSION / AMT_HAPTIC_LINK_STATE_*.
+        public const uint CurrentVersion = 1;
+        public const uint StateAbsent = 0;
+        public const uint StateReady = 1;
+        public const uint StateClosed = 2;
+        public const uint StateIncompatible = 3;
+    }
+
     public sealed class DeviceIo : IDisposable
     {
         // AMT_PTP_IOCTL_INDEX (0x900) + offset, mirrored from Public.h.
@@ -120,6 +148,11 @@ namespace AmtPtpConfigGui.Native
             CtlCode(FileDeviceUnknown, AmtPtpIoctlIndex + 13, MethodBuffered, FileReadAccess);
         public static readonly uint IoctlSetDebugMode =
             CtlCode(FileDeviceUnknown, AmtPtpIoctlIndex + 14, MethodBuffered, FileWriteAccess);
+
+        // State + click counters of the touchpad driver's link to the haptic
+        // actuator driver (IOCTL_AMT_PTP_GET_HAPTIC_LINK_INFO).
+        public static readonly uint IoctlGetHapticLinkInfo =
+            CtlCode(FileDeviceUnknown, AmtPtpIoctlIndex + 15, MethodBuffered, FileReadAccess);
 
         private const string ControlDevicePath = @"\\.\AmtPtpDeviceUsbKm";
 
@@ -259,6 +292,48 @@ namespace AmtPtpConfigGui.Native
 
                     info = Marshal.PtrToStructure<DeviceInfo>(outBuf);
                     return info.StructVersion == 1;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(outBuf);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Asks the touchpad driver whether it can actually play the second
+        /// haptic click (its link to the actuator driver) and how the clicks
+        /// it requested ended. False when not connected, and also when the
+        /// installed driver predates this IOCTL - callers then fall back to
+        /// looking for the actuator driver's interface themselves.
+        /// </summary>
+        public bool TryGetHapticLinkInfo(out HapticLinkInfo info)
+        {
+            lock (_ioLock)
+            {
+                info = default;
+                if (_handle == null || _handle.IsInvalid)
+                    return false;
+
+                int size = Marshal.SizeOf<HapticLinkInfo>();
+                IntPtr outBuf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    bool ok = DeviceIoControl(
+                        _handle,
+                        IoctlGetHapticLinkInfo,
+                        IntPtr.Zero,
+                        0,
+                        outBuf,
+                        (uint)size,
+                        out uint bytesReturned,
+                        IntPtr.Zero);
+
+                    if (!ok || bytesReturned < (uint)size)
+                        return false;
+
+                    info = Marshal.PtrToStructure<HapticLinkInfo>(outBuf);
+                    return info.StructVersion == HapticLinkInfo.CurrentVersion;
                 }
                 finally
                 {

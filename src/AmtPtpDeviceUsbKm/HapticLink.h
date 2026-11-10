@@ -7,29 +7,14 @@
 // haptic click works without the Control Center running.
 //
 // The two drivers stay independent: if the actuator driver is not installed
-// the link simply never opens and AmtHapticLinkClick() does nothing.
+// the link simply never opens, AmtHapticLinkIsReady() stays FALSE and the
+// frame path behaves as if the haptic click were switched off.
 //
-// The wire format below is a MIRROR of AmtHapticDeviceUsbKm/Public.h (the
-// device-interface GUID is defined in HapticLink.c). Keep them in sync and
-// bump AMT_HAPTIC_INTERFACE_VERSION on both sides on any layout change.
+// The wire format (device-interface GUID, IOCTL, request structure) is NOT
+// mirrored here: HapticLink.c includes the actuator driver's own Public.h, so
+// there is exactly one definition of the contract in the source tree.
 
 #pragma once
-
-#define AMT_HAPTIC_INTERFACE_VERSION 1
-
-typedef struct _AMT_HAPTIC_CLICK_REQUEST
-{
-    ULONG StructVersion;   // AMT_HAPTIC_INTERFACE_VERSION
-    ULONG Waveform;        // AMT_POINTER_HAPTIC_WAVEFORM_* (same values as the actuator's)
-} AMT_HAPTIC_CLICK_REQUEST, *PAMT_HAPTIC_CLICK_REQUEST;
-
-C_ASSERT(sizeof(AMT_HAPTIC_CLICK_REQUEST) == 8);
-
-#define AMT_HAPTIC_IOCTL_INDEX 0x800
-
-// Input: AMT_HAPTIC_CLICK_REQUEST. Fires one click.
-#define IOCTL_AMT_HAPTIC_CLICK \
-    CTL_CODE(FILE_DEVICE_UNKNOWN, AMT_HAPTIC_IOCTL_INDEX + 1, METHOD_BUFFERED, FILE_WRITE_DATA)
 
 EXTERN_C_START
 
@@ -53,12 +38,38 @@ AmtHapticLinkStop(
 );
 
 // Fires one click, best-effort and non-blocking. Callable at IRQL <=
-// DISPATCH_LEVEL (frame-processing path). Does nothing if the actuator
-// driver is not present or the previous click is still in flight.
+// DISPATCH_LEVEL (frame-processing path). Does nothing if the link is not
+// ready or the previous click is still in flight; either way the outcome is
+// counted (see AmtHapticLinkQueryInfo).
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID
 AmtHapticLinkClick(
     _Inout_ PDEVICE_CONTEXT DeviceContext,
     _In_    ULONG           Waveform
 );
+
+// Snapshot of the link state and its click counters for
+// IOCTL_AMT_PTP_GET_HAPTIC_LINK_INFO. Fills every field of *Info.
+_IRQL_requires_max_(DISPATCH_LEVEL)
+VOID
+AmtHapticLinkQueryInfo(
+    _In_  PDEVICE_CONTEXT       DeviceContext,
+    _Out_ PAMT_HAPTIC_LINK_INFO Info
+);
+
+// TRUE while a click can actually be delivered: the actuator driver's
+// interface is open and it speaks our interface version. Lock-free (one
+// volatile read), so the frame path can ask on every frame. The answer can
+// be stale by the time it is used; AmtHapticLinkClick re-checks under its
+// lock, so the worst case is one click that is not played.
+static __forceinline BOOLEAN
+AmtHapticLinkIsReady(
+    _In_ PDEVICE_CONTEXT DeviceContext
+)
+{
+    // HapticLinkState is a volatile LONG: a plain read cannot tear.
+    return (BOOLEAN)(DeviceContext->HapticLinkState ==
+                     (LONG)AMT_HAPTIC_LINK_STATE_READY);
+}
 
 EXTERN_C_END

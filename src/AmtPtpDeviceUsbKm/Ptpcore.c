@@ -938,11 +938,18 @@ PTPCore_ProcessFrame(
     // second haptic click is on: OutForceTouchClick below just reports "a
     // hard press was recognised", and Interrupt.c decides what it produces
     // (mouse action and/or haptic click).
+    //
+    // "Haptic click on" means switched on AND playable (ForceTouchHapticActive,
+    // the per-frame snapshot Interrupt.c takes before calling this function):
+    // arbitration holds the ordinary button-down back and, once the press
+    // crosses the threshold, drops it altogether. Doing that for a click the
+    // actuator cannot play (its driver is not installed on this model, or its
+    // interface is gone) would leave a hard press with no effect at all.
     BOOLEAN forceTouchHardwareActive =
         pCtx->SupportsForceTouch &&
         pCtx->PointerConfig.ForceTouchEnabled &&
         (pCtx->PointerConfig.ForceTouchActionEnabled ||
-         pCtx->PointerConfig.ForceTouchHapticEnabled);
+         pCtx->ForceTouchHapticActive);
     BOOLEAN forceTouchEmulationActive =
         !pCtx->SupportsForceTouch && pCtx->PointerConfig.ForceTouchEmulationEnabled;
 

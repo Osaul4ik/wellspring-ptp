@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AmtPtpConfigGui
 {
@@ -13,9 +14,14 @@ namespace AmtPtpConfigGui
         public Native.PointerConfig Pointer { get; set; }
         public Native.ScrollConfig Scroll { get; set; }
 
-        // Profiles saved before haptics existed have no "Haptics" entry, so
-        // the initializer is what they deserialize to.
-        public Native.HapticsConfig Haptics { get; set; } = Native.HapticsConfig.Default;
+        // LEGACY, read-only: the separate haptic settings of builds in which
+        // this app played the second click itself. Null for every profile
+        // saved before or after that period - deliberately NO initializer, so
+        // "absent" stays distinguishable from "present". Consumed once by
+        // ProfileStore.Normalize (PointerConfig.Migrate) and then dropped, so
+        // it is never written back.
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public Native.HapticsConfig? Haptics { get; set; }
 
         public override string ToString() => Name;
     }
@@ -142,115 +148,29 @@ namespace AmtPtpConfigGui
                 Palm = Native.PalmConfig.Default,
                 Pointer = Native.PointerConfig.Default,
                 Scroll = Native.ScrollConfig.Default,
-                Haptics = Native.HapticsConfig.Default,
             };
         }
 
-        private static void Normalize(List<GuiProfile> profiles)
+        // Internal (not private) so backup restore runs loaded profiles
+        // through exactly the same normalization as the profile store.
+        internal static void Normalize(List<GuiProfile> profiles)
         {
             foreach (var p in profiles)
             {
                 if (string.IsNullOrWhiteSpace(p.Name))
                     p.Name = "Profile";
+                else
+                    p.Name = p.Name.Trim();
+
                 p.Palm = p.Palm.StructVersion == 0 ? Native.PalmConfig.Default : p.Palm.Clamped();
-                if (p.Pointer.StructVersion < Native.PointerConfig.CurrentVersion)
-                {
-                    var defaults = Native.PointerConfig.Default;
-                    var old = p.Pointer;
 
-                    // Version 3 → 4: add Force Touch enable and the
-                    // optional pressure gate. Preserve all existing v3
-                    // pointer tuning while adopting the new factory
-                    // behavior for the newly added fields.
-                    if (p.Pointer.StructVersion < 4)
-                    {
-                        old.ForceTouchEnabled = defaults.ForceTouchEnabled;
-                        old.RequirePressureToActivate = defaults.RequirePressureToActivate;
-                    }
+                // All of the pointer version history lives in
+                // PointerConfig.Migrate. The legacy haptic settings are folded
+                // into the pointer config there and then dropped: the pointer
+                // config is the only place they are kept from now on.
+                p.Pointer = Native.PointerConfig.Migrate(p.Pointer, p.Haptics);
+                p.Haptics = null;
 
-                    // Version 4 → 5: add non-Force-Touch small-contact
-                    // rejection. Preserve existing v4 tuning while adopting
-                    // the factory behavior for the new field.
-                    if (p.Pointer.StructVersion < 5)
-                    {
-                        old.SmallContactRejectionEnabled = defaults.SmallContactRejectionEnabled;
-                    }
-
-                    // Version 5 → 6: add the optional continuous/strict
-                    // small-contact gate. Existing profiles keep it off.
-                    if (p.Pointer.StructVersion < 6)
-                    {
-                        old.SmallContactRejectionStrict = defaults.SmallContactRejectionStrict;
-                    }
-
-                    // Version 6 → 7: add the optional continuous Force-Touch
-                    // pressure gate. Existing profiles keep it off.
-                    if (p.Pointer.StructVersion < 7)
-                    {
-                        old.RequirePressureContinuously = defaults.RequirePressureContinuously;
-                    }
-
-                    // Version 9 → 10: add the GUI-tunable "M" (Major)
-                    // small-contact threshold for non-Force-Touch devices
-                    // (previously hardcoded at 50), plus the mirrored
-                    // small-contact gate + threshold for Force-Touch
-                    // devices. Existing profiles adopt the old hardcoded
-                    // Major=50 and keep the new Force-Touch gate off.
-                    if (p.Pointer.StructVersion < 10)
-                    {
-                        old.SmallContactMajorThreshold = defaults.SmallContactMajorThreshold;
-                        old.ForceTouchSmallContactRejectionEnabled = defaults.ForceTouchSmallContactRejectionEnabled;
-                        old.ForceTouchSmallContactRejectionStrict = defaults.ForceTouchSmallContactRejectionStrict;
-                        old.ForceTouchSmallContactMajorThreshold = defaults.ForceTouchSmallContactMajorThreshold;
-                    }
-
-                    // Version 10 → 11: split the small-contact gates into two
-                    // INDEPENDENT mechanisms, each with its own "M" threshold -
-                    // birth-only (previously hardcoded Major<80, now
-                    // SmallContactBirthMajorThreshold) and continuous (already
-                    // tunable since v10). The Enabled/Strict flags no longer
-                    // force each other off, so only the two new threshold
-                    // fields need an explicit default here - existing profiles
-                    // adopt the old hardcoded birth threshold of 80.
-                    if (p.Pointer.StructVersion < 11)
-                    {
-                        old.SmallContactBirthMajorThreshold = defaults.SmallContactBirthMajorThreshold;
-                        old.ForceTouchSmallContactBirthMajorThreshold = defaults.ForceTouchSmallContactBirthMajorThreshold;
-                    }
-
-                    // Version 11 → 12: the Force Touch action (hard-press
-                    // click arbitration) became its own switch under the
-                    // "Enable Force Touch" master. Existing profiles keep the
-                    // old behaviour, where the action was always on whenever
-                    // Force Touch was enabled.
-                    if (p.Pointer.StructVersion < 12)
-                    {
-                        old.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
-                    }
-
-                    // Version 13 → 14: the hard-tap hold time is gone and the
-                    // second haptic click moved into the driver. Carry the
-                    // profile's existing haptic on/off + waveform over, so
-                    // the driver keeps doing what the app did before.
-                    if (p.Pointer.StructVersion < 14)
-                    {
-                        var legacyHaptics = p.Haptics ?? Native.HapticsConfig.Default;
-                        old.ForceTouchHapticEnabled = legacyHaptics.Enabled ? 1u : 0u;
-                        old.ForceTouchHapticWaveform = (uint)legacyHaptics.Waveform;
-                        old.ForceTapDragCancelEnabled = defaults.ForceTapDragCancelEnabled;
-                    }
-
-                    if (p.Pointer.StructVersion < 3)
-                    {
-                        old.CursorDeadzoneSlow = defaults.CursorDeadzoneSlow;
-                        old.CursorDeadzoneFast = defaults.CursorDeadzoneFast;
-                        old.SmoothingAlphaDen = defaults.SmoothingAlphaDen;
-                        old.SmoothingAlphaNumSlow = defaults.SmoothingAlphaNumSlow;
-                    }
-
-                    p.Pointer = old;
-                }
-                p.Pointer = p.Pointer.StructVersion == 0 ? Native.PointerConfig.Default : p.Pointer.Clamped();
                 if (p.Scroll.StructVersion < Native.ScrollConfig.CurrentVersion)
                 {
                     var defaults = Native.ScrollConfig.Default;
@@ -262,7 +182,6 @@ namespace AmtPtpConfigGui
                     p.Scroll = old;
                 }
                 p.Scroll = p.Scroll.StructVersion == 0 ? Native.ScrollConfig.Default : p.Scroll.Clamped();
-                p.Haptics = (p.Haptics ?? Native.HapticsConfig.Default).Clamped();
             }
         }
     }

@@ -12,8 +12,9 @@ NTSTATUS
 AmtHapticCreateDevice(
     _Inout_ PWDFDEVICE_INIT DeviceInit
 )
-// Create the device object, its context, its click transfer, its device
-// interface and its queue.
+// Create the device object, its context, its device interface and its queue.
+// The click transfer is created in AmtHapticEvtDevicePrepareHardware, once
+// the USB target it is sent to exists.
 {
     WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     WDF_OBJECT_ATTRIBUTES        attributes;
@@ -46,8 +47,17 @@ AmtHapticCreateDevice(
     pnpCallbacks.EvtDevicePrepareHardware = AmtHapticEvtDevicePrepareHardware;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
 
+    // Default execution level (callbacks at IRQL <= DISPATCH_LEVEL), on
+    // purpose. The touchpad driver sends its click IOCTL from its USB
+    // completion path, i.e. at DISPATCH_LEVEL; with WdfExecutionLevelPassive
+    // the framework would have to hand every such click to a system worker
+    // thread first, adding scheduling latency to a haptic response that
+    // should follow the press immediately. Nothing in the I/O path needs
+    // PASSIVE_LEVEL: retrieving buffers, re-formatting and sending the
+    // preallocated request, cancelling it and completing requests are all
+    // DISPATCH_LEVEL-safe, and none of that code is pageable (only device
+    // creation, hardware preparation and the registry read are).
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
-    attributes.ExecutionLevel = WdfExecutionLevelPassive;
 
     status = WdfDeviceCreate(&DeviceInit, &attributes, &device);
     if (!NT_SUCCESS(status)) {
@@ -59,11 +69,6 @@ AmtHapticCreateDevice(
     context = DeviceGetContext(device);
 
     AmtHapticTraceLoadDebugModeFromRegistry(device, context);
-
-    status = AmtHapticAllocateTransfer(device);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
 
     status = WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_AMT_HAPTIC, NULL);
     if (!NT_SUCCESS(status)) {
@@ -159,6 +164,14 @@ AmtHapticEvtDevicePrepareHardware(
 
     context->UsbInterface    = selectParams.Types.SingleInterface.ConfiguredUsbInterface;
     context->InterfaceNumber = WdfUsbInterfaceGetInterfaceNumber(context->UsbInterface);
+
+    // Last, because it needs the USB target and the interface number: create
+    // (first start only) and prime the request every click reuses.
+    status = AmtHapticPrepareTransfer(Device);
+    if (!NT_SUCCESS(status)) {
+        AmtHapticTrace(context, "PrepareTransfer failed, status=0x%08X\n", status);
+        return status;
+    }
 
     AmtHapticTrace(context, "ready: %04X:%04X interface %u\n",
         deviceDescriptor.idVendor, deviceDescriptor.idProduct, (ULONG)context->InterfaceNumber);

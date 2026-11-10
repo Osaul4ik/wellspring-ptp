@@ -549,10 +549,15 @@ typedef struct _DEVICE_CONTEXT
     // ---------------------------------------------------------------
     // Link to the haptic actuator driver (HapticLink.c). Lets this driver
     // play the second haptic click itself at the moment of a Force Tap, so
-    // it works without the Control Center. HapticLinkLock (a leaf spin lock,
-    // never held together with another lock of this struct) guards
-    // HapticTarget / HapticRequest / HapticMemory / HapticBuffer;
-    // HapticSendBusy is Interlocked (1 while HapticRequest is in flight).
+    // it works without the Control Center.
+    //
+    // HapticLinkLock (a leaf spin lock, never held together with another
+    // lock of this struct) guards HapticTarget / HapticRequest /
+    // HapticMemory / HapticBuffer and every write of HapticLinkState except
+    // the one Interlocked READY -> INCOMPATIBLE transition made by the click
+    // completion routine. HapticSendBusy is Interlocked (1 while
+    // HapticRequest is in flight). The counters are Interlocked and only
+    // ever read as a diagnostic snapshot (AmtHapticLinkQueryInfo).
     // ---------------------------------------------------------------
     WDFDEVICE       HapticParentDevice;
     WDFSPINLOCK     HapticLinkLock;
@@ -563,6 +568,26 @@ typedef struct _DEVICE_CONTEXT
     WDFMEMORY       HapticMemory;
     PVOID           HapticBuffer;        // PAMT_HAPTIC_CLICK_REQUEST inside HapticMemory
     volatile LONG   HapticSendBusy;
+
+    // AMT_HAPTIC_LINK_STATE_* (Public.h). READY is the only state in which a
+    // click is sent; read lock-free by AmtHapticLinkIsReady().
+    volatile LONG   HapticLinkState;
+
+    volatile LONG   HapticClicksRequested;
+    volatile LONG   HapticClicksDelivered;
+    volatile LONG   HapticClicksThrottled;
+    volatile LONG   HapticClicksFailed;
+    volatile LONG   HapticClicksDropped;
+    volatile LONG   HapticLastStatus;
+
+    // Per-frame snapshot of "the second haptic click is switched on AND can
+    // be played right now" (PointerConfig.ForceTouchHapticEnabled &&
+    // AmtHapticLinkIsReady). Taken once at the top of frame processing under
+    // StateLock (Interrupt.c) and read by PTPCore_ProcessFrame and the rest of
+    // that frame, so one frame never sees two different answers. With the
+    // actuator driver absent this is FALSE and a hard press is NOT arbitrated
+    // for the sake of a click that could not be played.
+    BOOLEAN         ForceTouchHapticActive;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
@@ -891,6 +916,9 @@ NTSTATUS AmtPtpResetScrollConfig(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS AmtPtpGetDeviceInfo(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request);
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+NTSTATUS AmtPtpGetHapticLinkInfo(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request);
 
 // Best-effort registry persistence under the device's driver-software key
 // (HKLM\SYSTEM\...\Enum\...\Device Parameters, via WdfDeviceOpenRegistryKey).

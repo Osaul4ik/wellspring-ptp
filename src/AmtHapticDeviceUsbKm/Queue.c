@@ -59,6 +59,7 @@ AmtHapticHandleClick(
 {
     PAMT_HAPTIC_CLICK_REQUEST click;
     ULONGLONG                 now;
+    ULONGLONG                 previousClickTime;
     NTSTATUS                  status;
 
     status = WdfRequestRetrieveInputBuffer(Request, sizeof(AMT_HAPTIC_CLICK_REQUEST), (PVOID*)&click, NULL);
@@ -93,10 +94,16 @@ AmtHapticHandleClick(
 
     // Recorded BEFORE the send: once it is under way the completion can run on
     // another thread and the next click can arrive immediately.
+    previousClickTime = DeviceContext->LastClickTime;
     DeviceContext->LastClickTime = now;
 
     status = AmtHapticStartClick(DeviceContext, Request, click->Waveform);
     if (status != STATUS_PENDING) {
+        // Nothing reached the actuator, so this attempt must not start a
+        // cool-down that would throttle the caller's retry. Still inside the
+        // sequential queue's callback: no other click can have run since.
+        DeviceContext->LastClickTime = previousClickTime;
+
         InterlockedIncrement(&DeviceContext->ClicksFailed);
         InterlockedExchange(&DeviceContext->LastStatus, status);
         WdfRequestComplete(Request, status);

@@ -2,13 +2,17 @@
 //
 // WHY THE REQUEST IS PREALLOCATED AND REUSED
 // A click must not fail because the system is short of memory at the wrong
-// moment, and it should not allocate on every press. AmtHapticAllocateTransfer
-// therefore creates one request and one report buffer when the device is
-// created; every click re-formats the same request (WdfRequestReuse) and
-// copies its waveform into the same buffer. This is safe because the sequential
-// default queue (Queue.c) never has two clicks in flight, and the client's
-// request is only completed at the very end of the completion routine, after
-// the request has been made reusable - so the next click cannot start earlier.
+// moment, and it should not allocate on every press. AmtHapticPrepareTransfer
+// therefore creates one request and one report buffer when the hardware is
+// prepared and formats the request once: the framework allocates the IRP when
+// a request is created FOR an I/O target, and the USB request context (with
+// its URB) the first time a request is formatted for a control transfer -
+// both are then kept for the life of the request. Every click re-formats the
+// same request (WdfRequestReuse) and copies its waveform into the same buffer.
+// This is safe because the sequential default queue (Queue.c) never has two
+// clicks in flight, and the client's request is only completed at the very end
+// of the completion routine, after the request has been made reusable - so the
+// next click cannot start earlier.
 //
 // WHY THE TRANSFER IS ASYNCHRONOUS
 // The caller's thread only waits for the click's own completion, but no
@@ -19,7 +23,7 @@
 #include "Driver.h"
 
 #ifdef ALLOC_PRAGMA
-#pragma alloc_text (PAGE, AmtHapticAllocateTransfer)
+#pragma alloc_text (PAGE, AmtHapticPrepareTransfer)
 #endif
 
 // Captured actuator waveforms (HID output report 0x53, 14 bytes). The bytes
@@ -67,9 +71,36 @@ AmtHapticIsSupportedDevice(
     return FALSE;
 }
 
+// Formats the reused request as the HID class SET_REPORT(Output, report ID)
+// control transfer that carries the report buffer, addressed to the interface
+// the device was validated to be (never a hard-coded number here).
+static
+NTSTATUS
+AmtHapticFormatTransfer(
+    _In_ PDEVICE_CONTEXT DeviceContext
+)
+{
+    WDF_USB_CONTROL_SETUP_PACKET setup;
+
+    WDF_USB_CONTROL_SETUP_PACKET_INIT_CLASS(
+        &setup,
+        BmRequestHostToDevice,
+        BmRequestToInterface,
+        AMT_HID_REQUEST_SET_REPORT,
+        AMT_HID_REPORT_VALUE(AMT_HID_REPORT_TYPE_OUTPUT, AMT_HAPTIC_REPORT_ID),
+        DeviceContext->InterfaceNumber);
+
+    return WdfUsbTargetDeviceFormatRequestForControlTransfer(
+        DeviceContext->UsbDevice,
+        DeviceContext->TransferRequest,
+        &setup,
+        DeviceContext->ReportMemory,
+        NULL);
+}
+
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS
-AmtHapticAllocateTransfer(
+AmtHapticPrepareTransfer(
     _In_ WDFDEVICE Device
 )
 {
@@ -80,25 +111,55 @@ AmtHapticAllocateTransfer(
     PAGED_CODE();
 
     // Both objects are parented to the device, so the framework releases them
-    // with it; there is no cleanup callback to write.
-    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-    attributes.ParentObject = Device;
+    // with it; there is no cleanup callback to write. Each is created only
+    // once: this runs on every start, and a start that failed half-way must
+    // not leak (or re-create) what the previous attempt already made.
+    if (context->TransferRequest == NULL) {
+        WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+        attributes.ParentObject = Device;
 
-    status = WdfRequestCreate(&attributes, NULL, &context->TransferRequest);
-    if (!NT_SUCCESS(status)) {
-        return status;
+        // Created FOR the USB target, so the IRP is allocated here, with the
+        // stack size that target needs.
+        status = WdfRequestCreate(
+            &attributes,
+            WdfUsbTargetDeviceGetIoTarget(context->UsbDevice),
+            &context->TransferRequest);
+
+        if (!NT_SUCCESS(status)) {
+            context->TransferRequest = NULL;
+            return status;
+        }
     }
 
-    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-    attributes.ParentObject = Device;
+    if (context->ReportMemory == NULL) {
+        PVOID buffer;
 
-    return WdfMemoryCreate(
-        &attributes,
-        NonPagedPoolNx,
-        AMT_HAPTIC_POOL_TAG,
-        AMT_HAPTIC_REPORT_LENGTH,
-        &context->ReportMemory,
-        NULL);
+        WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+        attributes.ParentObject = Device;
+
+        status = WdfMemoryCreate(
+            &attributes,
+            NonPagedPoolNx,
+            AMT_HAPTIC_POOL_TAG,
+            AMT_HAPTIC_REPORT_LENGTH,
+            &context->ReportMemory,
+            &buffer);
+
+        if (!NT_SUCCESS(status)) {
+            context->ReportMemory = NULL;
+            return status;
+        }
+
+        RtlZeroMemory(buffer, AMT_HAPTIC_REPORT_LENGTH);
+    }
+
+    // Format once now, without sending: this is where the framework allocates
+    // the request's USB context and URB. The request is then marked for the
+    // lazy WdfRequestReuse every click path already knows how to do.
+    status = AmtHapticFormatTransfer(context);
+    context->TransferRequestNeedsReuse = TRUE;
+
+    return status;
 }
 
 NTSTATUS
@@ -108,7 +169,6 @@ AmtHapticStartClick(
     _In_ ULONG           Waveform
 )
 {
-    WDF_USB_CONTROL_SETUP_PACKET setup;
     WDF_REQUEST_SEND_OPTIONS     options;
     WDF_REQUEST_REUSE_PARAMS     reuse;
     PVOID                        buffer;
@@ -116,6 +176,11 @@ AmtHapticStartClick(
 
     if (Waveform >= AMT_HAPTIC_WAVEFORM_COUNT) {
         return STATUS_INVALID_PARAMETER;
+    }
+
+    // AmtHapticPrepareTransfer has not completed (the device never started).
+    if (DeviceContext->TransferRequest == NULL || DeviceContext->ReportMemory == NULL) {
+        return STATUS_DEVICE_NOT_READY;
     }
 
     if (DeviceContext->TransferRequestNeedsReuse) {
@@ -130,22 +195,7 @@ AmtHapticStartClick(
     buffer = WdfMemoryGetBuffer(DeviceContext->ReportMemory, NULL);
     RtlCopyMemory(buffer, AmtHapticReports[Waveform], AMT_HAPTIC_REPORT_LENGTH);
 
-    // HID class SET_REPORT(Output, report ID), addressed to the interface the
-    // device was validated to be (never a hard-coded number here).
-    WDF_USB_CONTROL_SETUP_PACKET_INIT_CLASS(
-        &setup,
-        BmRequestHostToDevice,
-        BmRequestToInterface,
-        AMT_HID_REQUEST_SET_REPORT,
-        AMT_HID_REPORT_VALUE(AMT_HID_REPORT_TYPE_OUTPUT, AMT_HAPTIC_REPORT_ID),
-        DeviceContext->InterfaceNumber);
-
-    status = WdfUsbTargetDeviceFormatRequestForControlTransfer(
-        DeviceContext->UsbDevice,
-        DeviceContext->TransferRequest,
-        &setup,
-        DeviceContext->ReportMemory,
-        NULL);
+    status = AmtHapticFormatTransfer(DeviceContext);
 
     if (!NT_SUCCESS(status)) {
         DeviceContext->TransferRequestNeedsReuse = TRUE;
@@ -182,7 +232,9 @@ AmtHapticCancelClick(
     _In_ PDEVICE_CONTEXT DeviceContext
 )
 {
-    (VOID)WdfRequestCancelSentRequest(DeviceContext->TransferRequest);
+    if (DeviceContext->TransferRequest != NULL) {
+        (VOID)WdfRequestCancelSentRequest(DeviceContext->TransferRequest);
+    }
 }
 
 static

@@ -39,11 +39,15 @@ AmtHapticIsSupportedDevice(
     _In_ USHORT ProductId
 );
 
-// Creates the request and report buffer reused for every click, so the click
-// path itself allocates nothing and cannot fail for lack of memory.
+// Creates (once per device) the request and report buffer reused for every
+// click and formats the request a first time, so that everything a click
+// needs - the IRP, the framework's USB request context and its URB - already
+// exists. The click path itself then allocates nothing and cannot fail for
+// lack of memory. Call from EvtDevicePrepareHardware, after the USB target
+// and the interface number are known; safe to call again on a restart.
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS
-AmtHapticAllocateTransfer(
+AmtHapticPrepareTransfer(
     _In_ WDFDEVICE Device
 );
 

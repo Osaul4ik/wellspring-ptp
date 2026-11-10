@@ -291,6 +291,16 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     // across the complete state-mutating section.
     WdfSpinLockAcquire(pCtx->StateLock);
 
+    // One answer per frame to "is the second haptic click on AND playable":
+    // PTPCore_ProcessFrame and the blocks below all read this snapshot, so a
+    // link that opens or closes mid-frame cannot make them disagree. With the
+    // actuator driver absent (every model it does not bind to) this is FALSE
+    // and a hard press is not arbitrated just for a click that cannot be
+    // played - see DEVICE_CONTEXT::ForceTouchHapticActive.
+    pCtx->ForceTouchHapticActive =
+        pCtx->PointerConfig.ForceTouchHapticEnabled != 0 &&
+        AmtHapticLinkIsReady(pCtx);
+
     RtlZeroMemory(&Report, sizeof(PTP_REPORT));
     Report.ReportID = REPORTID_MULTITOUCH;
 
@@ -357,7 +367,7 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     if ((pCtx->SupportsForceTouch &&
          pCtx->PointerConfig.ForceTouchEnabled &&
          (pCtx->PointerConfig.ForceTouchActionEnabled ||
-          pCtx->PointerConfig.ForceTouchHapticEnabled)) ||
+          pCtx->ForceTouchHapticActive)) ||
         (!pCtx->SupportsForceTouch &&
          pCtx->PointerConfig.ForceTouchEmulationEnabled)) {
         PTP_CONTACT* tracked = NULL;
@@ -447,7 +457,7 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
     BOOLEAN forceTapHaptic = forceTouchClick &&
         pCtx->SupportsForceTouch &&
         pCtx->PointerConfig.ForceTouchEnabled &&
-        pCtx->PointerConfig.ForceTouchHapticEnabled;
+        pCtx->ForceTouchHapticActive;
     ULONG   forceTapHapticWaveform = pCtx->PointerConfig.ForceTouchHapticWaveform;
 
     if (forceTapMouse) {

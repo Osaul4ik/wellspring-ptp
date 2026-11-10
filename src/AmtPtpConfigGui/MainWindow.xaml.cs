@@ -635,7 +635,6 @@ namespace AmtPtpConfigGui
                     active.Palm = ReadConfigFromSliders();
                     active.Pointer = ReadPointerConfigFromControls();
                     active.Scroll = ReadScrollConfigFromControls();
-                    active.Haptics = ReadHapticsFromControls();
                 }
 
                 var backup = new WellspringBackup
@@ -682,15 +681,12 @@ namespace AmtPtpConfigGui
                 if (backup.Version < 1)
                     throw new InvalidDataException("Unsupported backup version.");
 
+                // Same normalization as the profile store (names, clamping,
+                // pointer-config version migration including the legacy
+                // "Haptics" object of older backups) - one code path, so a
+                // restored profile cannot end up different from a stored one.
                 var restoredProfiles = backup.Profiles.Select(CloneProfile).ToList();
-                foreach (var profile in restoredProfiles)
-                {
-                    profile.Name = string.IsNullOrWhiteSpace(profile.Name) ? "Profile" : profile.Name.Trim();
-                    profile.Palm = profile.Palm.StructVersion == 0 ? PalmConfig.Default : profile.Palm.Clamped();
-                    profile.Pointer = NormalizePointerConfig(profile.Pointer);
-                    profile.Scroll = profile.Scroll.StructVersion == 0 ? ScrollConfig.Default : profile.Scroll.Clamped();
-                    profile.Haptics = (profile.Haptics ?? HapticsConfig.Default).Clamped();
-                }
+                ProfileStore.Normalize(restoredProfiles);
 
                 _profilesReady = false;
                 _profiles.Clear();
@@ -719,8 +715,6 @@ namespace AmtPtpConfigGui
                     LoadConfigIntoSliders(active.Palm);
                     LoadPointerConfigIntoControls(active.Pointer);
                     LoadScrollConfigIntoControls(active.Scroll);
-                    LoadHapticsIntoControls(active.Haptics);
-                    _haptics.Configure(active.Haptics);
                     DrawPreview();
                 }
 
@@ -737,86 +731,6 @@ namespace AmtPtpConfigGui
             }
         }
 
-        private static PointerConfig NormalizePointerConfig(PointerConfig cfg)
-        {
-            var defaults = PointerConfig.Default;
-
-            if (cfg.StructVersion == 0)
-                return defaults;
-
-            // Older files used smaller PointerConfig layouts. Fields added
-            // after the serialized version must be filled from current defaults
-            // because the missing tail arrives as zero.
-            if (cfg.StructVersion < PointerConfig.CurrentVersion)
-            {
-                if (cfg.StructVersion < 4)
-                {
-                    cfg.ForceTouchEnabled = defaults.ForceTouchEnabled;
-                    cfg.RequirePressureToActivate = defaults.RequirePressureToActivate;
-                }
-
-                if (cfg.StructVersion < 5)
-                    cfg.SmallContactRejectionEnabled = defaults.SmallContactRejectionEnabled;
-
-                if (cfg.StructVersion < 6)
-                    cfg.SmallContactRejectionStrict = defaults.SmallContactRejectionStrict;
-
-                if (cfg.StructVersion < 7)
-                    cfg.RequirePressureContinuously = defaults.RequirePressureContinuously;
-
-                if (cfg.StructVersion < 8)
-                {
-                    cfg.ForceTouchEmulationEnabled = defaults.ForceTouchEmulationEnabled;
-                    cfg.ForceTouchEmulationAction = defaults.ForceTouchEmulationAction;
-                    cfg.ForceTouchEmulationHoldMs = defaults.ForceTouchEmulationHoldMs;
-                }
-
-                if (cfg.StructVersion < 9)
-                {
-                    cfg.ForceTapDragLockoutDistance = defaults.ForceTapDragLockoutDistance;
-                    cfg.ForceTouchEmulationDragLockoutDistance = defaults.ForceTouchEmulationDragLockoutDistance;
-                }
-
-                // Version 9 → 10: add the GUI-tunable continuous-gate "M"
-                // threshold for non-Force-Touch (previously hardcoded 50),
-                // plus the mirrored small-contact gate + threshold for
-                // Force-Touch devices (new, off by default).
-                if (cfg.StructVersion < 10)
-                {
-                    cfg.SmallContactMajorThreshold = defaults.SmallContactMajorThreshold;
-                    cfg.ForceTouchSmallContactRejectionEnabled = defaults.ForceTouchSmallContactRejectionEnabled;
-                    cfg.ForceTouchSmallContactRejectionStrict = defaults.ForceTouchSmallContactRejectionStrict;
-                    cfg.ForceTouchSmallContactMajorThreshold = defaults.ForceTouchSmallContactMajorThreshold;
-                }
-
-                // Version 10 → 11: split the small-contact gates into two
-                // INDEPENDENT mechanisms, each with its own "M" threshold -
-                // birth-only (previously hardcoded Major<80) and continuous
-                // (already tunable since v10). Existing configs adopt the
-                // old hardcoded birth threshold of 80 for both device kinds.
-                if (cfg.StructVersion < 11)
-                {
-                    cfg.SmallContactBirthMajorThreshold = defaults.SmallContactBirthMajorThreshold;
-                    cfg.ForceTouchSmallContactBirthMajorThreshold = defaults.ForceTouchSmallContactBirthMajorThreshold;
-                }
-
-                // Version 11 → 12: Force Touch action is its own switch under
-                // the "Enable Force Touch" master; older configs keep it on.
-                if (cfg.StructVersion < 12)
-                    cfg.ForceTouchActionEnabled = defaults.ForceTouchActionEnabled;
-                // Version 13 → 14: hold time removed, haptic click now lives
-                // in the driver (on by default, firm waveform).
-                if (cfg.StructVersion < 14)
-                {
-                    cfg.ForceTouchHapticEnabled = defaults.ForceTouchHapticEnabled;
-                    cfg.ForceTouchHapticWaveform = defaults.ForceTouchHapticWaveform;
-                    cfg.ForceTapDragCancelEnabled = defaults.ForceTapDragCancelEnabled;
-                }
-            }
-
-            return cfg.Clamped();
-        }
-
         private static GuiProfile CloneProfile(GuiProfile source)
         {
             return new GuiProfile
@@ -825,7 +739,10 @@ namespace AmtPtpConfigGui
                 Palm = source.Palm,
                 Pointer = source.Pointer,
                 Scroll = source.Scroll,
-                Haptics = (source.Haptics ?? HapticsConfig.Default).Clamped()
+                // Legacy haptic settings (old backups only): carried along
+                // untouched until ProfileStore.Normalize folds them into
+                // Pointer; null for every current profile.
+                Haptics = source.Haptics
             };
         }
 
@@ -1413,9 +1330,6 @@ namespace AmtPtpConfigGui
                 ProfileCombo.SelectedIndex = 0;
             }
             _profilesReady = true;
-
-            // The saved profile decides what the engine does from the start.
-            _haptics.Configure(ActiveProfile?.Haptics ?? HapticsConfig.Default);
         }
 
         private GuiProfile? ActiveProfile =>
@@ -1433,7 +1347,6 @@ namespace AmtPtpConfigGui
             LoadConfigIntoSliders(profile.Palm.Clamped());
             LoadPointerConfigIntoControls(profile.Pointer.Clamped());
             LoadScrollConfigIntoControls(profile.Scroll.StructVersion == 0 ? ScrollConfig.Default : profile.Scroll.Clamped());
-            LoadHapticsIntoControls(profile.Haptics);
             DrawPreview();
             SetBottomStatus($"Loaded profile “{profile.Name}”. Click “Save” to apply it to the driver.");
         }
@@ -1521,7 +1434,6 @@ namespace AmtPtpConfigGui
                 LoadConfigIntoSliders(current.Palm.Clamped());
                 LoadPointerConfigIntoControls(current.Pointer.Clamped());
                 LoadScrollConfigIntoControls(current.Scroll.StructVersion == 0 ? ScrollConfig.Default : current.Scroll.Clamped());
-                LoadHapticsIntoControls(current.Haptics);
                 DrawPreview();
             }
             SetBottomStatus("Profile deleted.");
@@ -2373,12 +2285,17 @@ namespace AmtPtpConfigGui
         // ------------------------------------------------------------------
         // Pressure haptics (second click on a firm press)
         //
-        // The settings are part of the profile and are applied by the same
-        // "Save" as everything else. The engine itself runs inside this app
-        // (HapticsEngine) and keeps working while the window is hidden in the
-        // tray. The 200 ms timer below only feeds the live pressure meter and
-        // the status line, and runs only while the Haptics group is actually
-        // visible (Pointer tab selected, window not hidden to the tray).
+        // The second click is decided and played by the touchpad DRIVER; its
+        // settings ("Pressure needed", the on/off switch, the waveform) are
+        // ordinary PointerConfig fields, read and written with the rest of
+        // the Pointer tab (LoadPointerConfigIntoControls /
+        // ReadPointerConfigFromControls) and applied by the same "Save".
+        // HapticsEngine only observes: it reports whether the driver can play
+        // the click, feeds the live pressure meter and plays "Test click".
+        // The 200 ms timer below copies its status into the UI and runs only
+        // while the group is actually visible (Pointer tab selected, window
+        // not hidden to the tray); while it is not, the engine asks the
+        // drivers for nothing.
         // ------------------------------------------------------------------
         private readonly HapticsEngine _haptics;
 
@@ -2386,25 +2303,6 @@ namespace AmtPtpConfigGui
         {
             Interval = TimeSpan.FromMilliseconds(200)
         };
-
-        private HapticsConfig ReadHapticsFromControls()
-        {
-            return new HapticsConfig
-            {
-                Enabled = ChkHapticsEnabled.IsChecked == true,
-                Threshold = (int)Math.Round(SlHapticsThreshold.Value),
-                Waveform = Math.Max(CmbHapticsWaveform.SelectedIndex, 0),
-            }.Clamped();
-        }
-
-        private void LoadHapticsIntoControls(HapticsConfig? config)
-        {
-            var cfg = (config ?? HapticsConfig.Default).Clamped();
-            ChkHapticsEnabled.IsChecked = cfg.Enabled;
-            SlHapticsThreshold.Value = cfg.Threshold;
-            CmbHapticsWaveform.SelectedIndex = cfg.Waveform;
-            UpdateHapticsLabels();
-        }
 
         private void HapticsSlider_Changed(object sender, RoutedEventArgs e)
         {
@@ -2425,12 +2323,26 @@ namespace AmtPtpConfigGui
 
         private void HapticsGroup_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
+            // Wired up in XAML, so it can in principle fire from inside
+            // InitializeComponent(), before the constructor has created the
+            // engine.
+            if (_haptics == null)
+                return;
+
             if (!ForceTouchGroup.IsVisible)
             {
+                // Hidden (another tab, or the window parked in the tray): the
+                // timer that would refresh these flags stops here, so they
+                // must be dropped now - left set, the engine would keep the
+                // driver's live stream on and poll it every few milliseconds
+                // for a meter nobody can see.
                 _hapticsTimer.Stop();
+                _haptics.MeterWanted = false;
+                _haptics.StatusWanted = false;
                 return;
             }
 
+            _haptics.StatusWanted = true;
             _hapticsTimer.Start();
             RefreshHapticsStatus();
         }
@@ -2442,8 +2354,11 @@ namespace AmtPtpConfigGui
 
         private void RefreshHapticsStatus()
         {
-            // Feed the live pressure meter only while it is visible.
-            _haptics.MeterWanted = ForceTouchGroup.IsVisible && ChkLive.IsChecked == true;
+            // Ask the drivers only while the group is visible, and feed the
+            // live pressure meter only while it is visible too.
+            bool visible = ForceTouchGroup.IsVisible;
+            _haptics.StatusWanted = visible;
+            _haptics.MeterWanted = visible && ChkLive.IsChecked == true;
 
             HapticsStatus status = _haptics.Status;
             bool running = status.State == HapticsState.Running;
@@ -2455,27 +2370,77 @@ namespace AmtPtpConfigGui
                 PbHapticsPressure.Value = Math.Min(status.Pressure, PbHapticsPressure.Maximum);
                 LblHapticsPressure.Text = running ? $"{status.Pressure}" : "—";
             }
-            LblHapticsStatus.Text = status.State switch
+            LblHapticsStatus.Text = DescribeHapticsStatus(status);
+        }
+
+        // What the status line says. The state comes from the DRIVER's applied
+        // configuration and its link to the actuator driver, not from the
+        // controls above: an edit only counts once it has been saved.
+        private static string DescribeHapticsStatus(HapticsStatus status)
+        {
+            switch (status.State)
             {
-                HapticsState.Running or HapticsState.Idle =>
-                    "On · the driver plays the second click itself, also when this app is closed.",
-                HapticsState.Disabled => "Off · enable it above and press Save.",
-                HapticsState.DriverUnavailable => "Waiting for the Wellspring driver (not connected).",
-                HapticsState.ActuatorUnavailable => "The Wellspring haptic actuator driver is not installed or not ready. Clicks are skipped until it appears.",
-                HapticsState.FeedUnavailable => "Waiting for pressure data from the Wellspring driver.",
-                _ => string.Empty,
-            };
+                case HapticsState.Running:
+                case HapticsState.Idle:
+                    string text = "On · the driver plays the second click itself, also when this app is closed.";
+                    if (status.ClicksFailed != 0)
+                        text += $" {status.ClicksFailed} click(s) could not be played since the touchpad started ({status.ClicksDelivered} played).";
+                    return text;
+                case HapticsState.Disabled:
+                    return "Off · enable it above (with Force Touch on) and press Save.";
+                case HapticsState.DriverUnavailable:
+                    return "Waiting for the Wellspring driver (not connected).";
+                case HapticsState.ActuatorUnavailable:
+                    return "The Wellspring haptic actuator driver is not installed or not ready. Hard presses behave as if the haptic click were off until it appears.";
+                case HapticsState.ActuatorIncompatible:
+                    return "The Wellspring haptic actuator driver is a different version than the touchpad driver. Reinstall both from the same release.";
+                case HapticsState.LinkDown:
+                    return "The haptic actuator driver is present, but the touchpad driver is not connected to it yet.";
+                case HapticsState.FeedUnavailable:
+                    return "Waiting for pressure data from the Wellspring driver.";
+                default:
+                    return "Checking haptics…";
+            }
         }
 
         private async void HapticsTest_Click(object sender, RoutedEventArgs e)
         {
             // Plays the waveform selected right now, saved or not, so it can
             // be judged before pressing Save. Off the UI thread: the actuator
-            // transfer can block for up to its timeout.
-            int waveform = ReadHapticsFromControls().Waveform;
-            bool ok = await Task.Run(() => _haptics.TestClick(waveform));
-            if (!ok)
-                SetBottomStatus("Haptic test failed: the Wellspring haptic actuator driver is not installed or not ready.");
+            // transfer can block for up to its timeout. async void (an event
+            // handler), so nothing may escape it.
+            int waveform = CmbHapticsWaveform.SelectedIndex == 1 ? 1 : 0;
+            HapticsActuator.Result result;
+            try
+            {
+                result = await Task.Run(() => HapticsEngine.TestClick(waveform));
+            }
+            catch (Exception ex)
+            {
+                SetBottomStatus($"Haptic test failed: {ex.Message}");
+                return;
+            }
+
+            switch (result)
+            {
+                case HapticsActuator.Result.Ok:
+                    break;
+                case HapticsActuator.Result.Busy:
+                    SetBottomStatus("Haptic test skipped: the actuator was still busy with the previous click. Try again.");
+                    break;
+                case HapticsActuator.Result.NotInstalled:
+                    SetBottomStatus("Haptic test failed: the Wellspring haptic actuator driver is not installed or not started.");
+                    break;
+                case HapticsActuator.Result.Incompatible:
+                    SetBottomStatus("Haptic test failed: the haptic actuator driver is a different version than this app.");
+                    break;
+                case HapticsActuator.Result.Multiple:
+                    SetBottomStatus("Haptic test failed: more than one haptic actuator was found.");
+                    break;
+                default:
+                    SetBottomStatus("Haptic test failed: the haptic actuator driver did not accept the click.");
+                    break;
+            }
         }
 
         private bool _suppressPointerEvents;
@@ -2492,7 +2457,7 @@ namespace AmtPtpConfigGui
                 // click itself, so all three live in the driver's config
                 // (registry) and are shown from it here.
                 SlHapticsThreshold.Value = Math.Clamp(
-                    (int)cfg.ForceTapThreshold, HapticsConfig.ThresholdMin, HapticsConfig.ThresholdMax);
+                    cfg.ForceTapThreshold, PointerConfig.ThresholdMin, PointerConfig.ThresholdMax);
                 ChkHapticsEnabled.IsChecked = cfg.ForceTouchHapticEnabled != 0;
                 CmbHapticsWaveform.SelectedIndex = cfg.ForceTouchHapticWaveform == 0 ? 0 : 1;
                 ChkForceTapDragCancel.IsChecked = cfg.ForceTapDragCancelEnabled != 0;
@@ -2974,7 +2939,6 @@ namespace AmtPtpConfigGui
             }
             var requestedPointer = ReadPointerConfigFromControls();
             var requestedScroll = ReadScrollConfigFromControls();
-            var requestedHaptics = ReadHapticsFromControls();
 
             bool palmOk = false, pointerOk = false, scrollOk = false;
             if (_device.IsConnected)
@@ -3021,12 +2985,8 @@ namespace AmtPtpConfigGui
                 profile.Palm = savedPalm.Clamped();
                 profile.Pointer = requestedPointer.Clamped();
                 profile.Scroll = requestedScroll.StructVersion == 0 ? ScrollConfig.Default : requestedScroll.Clamped();
-                profile.Haptics = requestedHaptics;
                 TrySaveProfiles();
             }
-
-            // Not driver configuration: applies to the in-app haptics engine.
-            _haptics.Configure(requestedHaptics);
 
             if (!_device.IsConnected)
             {
@@ -3091,10 +3051,6 @@ namespace AmtPtpConfigGui
             bool scrollOk = _device.IsConnected && _device.TryResetScrollConfig(out appliedScroll);
             LoadScrollConfigIntoControls(scrollOk ? appliedScroll : ScrollConfig.Default);
 
-            var defaultHaptics = HapticsConfig.Default;
-            LoadHapticsIntoControls(defaultHaptics);
-            _haptics.Configure(defaultHaptics);
-
             if (palmOk && pointerOk && scrollOk)
                 SetBottomStatus("Reset to defaults (Palm + Scroll + Pointer + Haptics).");
             else if (_device.IsConnected)
@@ -3109,7 +3065,6 @@ namespace AmtPtpConfigGui
                 active.Palm = ReadConfigFromSliders();
                 active.Pointer = ReadPointerConfigFromControls();
                 active.Scroll = ReadScrollConfigFromControls();
-                active.Haptics = ReadHapticsFromControls();
                 TrySaveProfiles();
             }
         }
@@ -3126,8 +3081,7 @@ namespace AmtPtpConfigGui
             var profile = AmtPtpProfile.FromCurrent(
                 ReadConfigFromSliders(),
                 ReadPointerConfigFromControls(),
-                ReadScrollConfigFromControls(),
-                ReadHapticsFromControls());
+                ReadScrollConfigFromControls());
 
             var json = JsonSerializer.Serialize(profile, JsonOptions);
             File.WriteAllText(dlg.FileName, json);
@@ -3162,19 +3116,11 @@ namespace AmtPtpConfigGui
                         throw new InvalidDataException("Empty or invalid profile file.");
 
                     LoadConfigIntoSliders(profile.Palm.StructVersion == 0 ? PalmConfig.Default : profile.Palm.Clamped());
-                    LoadPointerConfigIntoControls(NormalizePointerConfig(profile.Pointer));
+                    // The haptic click's settings are part of the pointer
+                    // config; a file from a build that kept them in a
+                    // separate "Haptics" object is migrated on the way in.
+                    LoadPointerConfigIntoControls(PointerConfig.Migrate(profile.Pointer, profile.Haptics));
                     LoadScrollConfigIntoControls(profile.Scroll.StructVersion == 0 ? ScrollConfig.Default : profile.Scroll.Clamped());
-                    // Files written before haptics existed carry no haptic
-                    // settings: keep the current ones rather than reset them.
-                    if (profile.Haptics != null)
-                        LoadHapticsIntoControls(profile.Haptics);
-                    else
-                        // No haptic settings in the file: the Force Touch
-                        // pressure from the pointer config still has to land
-                        // on the single "Pressure needed" slider.
-                        SlHapticsThreshold.Value = Math.Clamp(
-                            (int)profile.Pointer.ForceTapThreshold,
-                            HapticsConfig.ThresholdMin, HapticsConfig.ThresholdMax);
                     DrawPreview();
                     SetBottomStatus($"Profile (Palm + Scroll + Pointer + Haptics) loaded: {dlg.FileName}. Click “Save” to write it to the driver.");
                 }

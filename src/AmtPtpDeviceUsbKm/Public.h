@@ -176,10 +176,13 @@ typedef struct _AMT_POINTER_CONFIG
     // hard press becomes a Force Tap - same pressure threshold
     // (ForceTapThreshold), same drag-cancel rule - so it works without the
     // Control Center running. Persisted in the registry like every other
-    // field here. Ignored on trackpads without a pressure sensor and when the
-    // actuator driver is not installed. Independent of
-    // ForceTouchActionEnabled: with the action off the press is still
-    // arbitrated and only the haptic click is produced.
+    // field here. Ignored on trackpads without a pressure sensor and while the
+    // link to the actuator driver is not ready (driver not installed on this
+    // model, interface gone, or an incompatible revision - see
+    // IOCTL_AMT_PTP_GET_HAPTIC_LINK_INFO): the press is then handled exactly
+    // as if this flag were 0. Independent of ForceTouchActionEnabled: with the
+    // action off the press is still arbitrated and only the haptic click is
+    // produced.
     ULONG ForceTouchHapticEnabled;
     ULONG ForceTouchHapticWaveform;   // AMT_POINTER_HAPTIC_WAVEFORM_*
 
@@ -290,9 +293,10 @@ typedef struct _AMT_POINTER_CONFIG
 #define AMT_POINTER_FORCE_TOUCH_EMULATION_HOLD_MS_MAX  2000
 #define AMT_POINTER_FORCE_TOUCH_EMULATION_HOLD_MS_STEP   50
 
-// Drag-cancel distance range/step, in raw sensor units. Default is 60 on
-// both paths (tighter than the old hardcoded 160 FORCE_TOUCH_DRAG_LOCKOUT_
-// DISTANCE #define this replaces - see Ptpcore.c). 10-unit grid for the
+// Drag-cancel distance range/step, in raw sensor units. Defaults are 130
+// (hardware path) and 110 (emulation path) - see AMT_POINTER_CONFIG_DEFAULT_
+// INIT above; both replace the old hardcoded 160 FORCE_TOUCH_DRAG_LOCKOUT_
+// DISTANCE #define (see Ptpcore.c). 10-unit grid for the
 // hand-crafted/corrupt-value re-quantization reason as the hold-ms grid
 // above.
 #define AMT_POINTER_FORCE_TOUCH_DRAG_LOCKOUT_DISTANCE_MIN    40
@@ -426,6 +430,45 @@ typedef struct _AMT_DEVICE_INFO
 
 #define IOCTL_AMT_PTP_SET_DEBUG_MODE \
     CTL_CODE(FILE_DEVICE_UNKNOWN, AMT_PTP_IOCTL_INDEX + 14, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+// State of the touchpad driver's link to the haptic actuator driver
+// (HapticLink.c) and what happened to the clicks it asked for. The second
+// haptic click is played by the touchpad driver, so THIS is what tells whether
+// a hard press can click - the mere presence of the actuator driver's device
+// interface does not. Read-only, no input buffer. A driver built before this
+// IOCTL existed answers STATUS_INVALID_DEVICE_REQUEST; the GUI then falls back
+// to looking for the actuator interface itself.
+#define IOCTL_AMT_PTP_GET_HAPTIC_LINK_INFO \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, AMT_PTP_IOCTL_INDEX + 15, METHOD_BUFFERED, FILE_READ_DATA)
+
+// AMT_HAPTIC_LINK_INFO::State.
+#define AMT_HAPTIC_LINK_STATE_ABSENT        0   // actuator driver's interface not present
+#define AMT_HAPTIC_LINK_STATE_READY         1   // open; clicks are delivered
+#define AMT_HAPTIC_LINK_STATE_CLOSED        2   // present but closed (its removal is pending, or a re-open failed)
+#define AMT_HAPTIC_LINK_STATE_INCOMPATIBLE  3   // actuator driver speaks another interface version
+
+typedef struct _AMT_HAPTIC_LINK_INFO
+{
+    ULONG StructVersion;      // AMT_HAPTIC_LINK_INFO_VERSION
+    ULONG State;              // AMT_HAPTIC_LINK_STATE_*
+
+    // Counters since this touchpad device instance was created. Every
+    // requested click ends up in exactly one of the four that follow it
+    // (a click still in flight is in none of them yet).
+    ULONG ClicksRequested;    // Force Taps that wanted a haptic click
+    ULONG ClicksDelivered;    // completed successfully by the actuator driver
+    ULONG ClicksThrottled;    // refused by the actuator's minimum-interval limit
+    ULONG ClicksFailed;       // sent (or tried to) but failed, timed out or cancelled
+    ULONG ClicksDropped;      // never sent: link not ready, or the previous click still in flight
+
+    LONG  LastStatus;         // NTSTATUS of the most recent completed/failed click (0 = none yet)
+
+    ULONG Reserved[4];        // future growth, keep struct size stable
+} AMT_HAPTIC_LINK_INFO, *PAMT_HAPTIC_LINK_INFO;
+
+#define AMT_HAPTIC_LINK_INFO_VERSION 1
+
+C_ASSERT(sizeof(AMT_HAPTIC_LINK_INFO) == 48);
 
 typedef struct _AMT_SCROLL_CONFIG
 {

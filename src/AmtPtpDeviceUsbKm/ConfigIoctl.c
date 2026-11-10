@@ -841,6 +841,42 @@ exit:
     return status;
 }
 
+// Link to the haptic actuator driver (HapticLink.c): state + click counters.
+// This is what lets the Control Center tell "the driver can play the second
+// click" from "the actuator driver's interface merely exists".
+_IRQL_requires_max_(DISPATCH_LEVEL)
+NTSTATUS
+AmtPtpGetHapticLinkInfo(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
+{
+    NTSTATUS              status;
+    PDEVICE_CONTEXT       pDeviceContext;
+    PAMT_HAPTIC_LINK_INFO pOutInfo;
+    size_t                outLen = 0;
+
+    pDeviceContext = DeviceGetContext(Device);
+
+    status = WdfRequestRetrieveOutputBuffer(
+        Request, sizeof(AMT_HAPTIC_LINK_INFO), (PVOID*)&pOutInfo, &outLen);
+    if (!NT_SUCCESS(status)) {
+        goto exit;
+    }
+
+    // Same explicit re-check as AmtPtpGetPadGeometry: makes the bound visible
+    // to static analysis (C6386).
+    if (outLen < sizeof(AMT_HAPTIC_LINK_INFO)) {
+        status = STATUS_BUFFER_TOO_SMALL;
+        goto exit;
+    }
+
+    AmtHapticLinkQueryInfo(pDeviceContext, pOutInfo);
+
+    WdfRequestSetInformation(Request, sizeof(AMT_HAPTIC_LINK_INFO));
+    status = STATUS_SUCCESS;
+
+exit:
+    return status;
+}
+
 // ----------------------------------------------------------------------------
 // Runtime debug-trace switch (see Trace.h/Trace.c). GET/SET a plain ULONG
 // (0/1), same shape as AmtPtpSetLiveEnabled but with no per-file ownership
@@ -1033,6 +1069,10 @@ AmtPtpConfigControlEvtIoDeviceControl(
 
     case IOCTL_AMT_PTP_SET_DEBUG_MODE:
         status = AmtPtpSetDebugMode(targetDevice, Request);
+        break;
+
+    case IOCTL_AMT_PTP_GET_HAPTIC_LINK_INFO:
+        status = AmtPtpGetHapticLinkInfo(targetDevice, Request);
         break;
 
     default:
@@ -1243,4 +1283,4 @@ AmtPtpConfigControlEvtConfigControlCleanup(_In_ WDFOBJECT Object)
         AmtConfigControlGetContext(controlDevice);
 
     controlContext->TargetDevice = NULL;
-}
+}

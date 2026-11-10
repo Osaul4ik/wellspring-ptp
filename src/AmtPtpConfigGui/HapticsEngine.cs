@@ -2,57 +2,92 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using AmtPtpConfigGui.Native;
-using ActuatorHandle = Microsoft.Win32.SafeHandles.SafeFileHandle;
 
 namespace AmtPtpConfigGui
 {
     internal enum HapticsState
     {
+        // Nothing has been asked of the monitor yet (StatusWanted is off).
+        Unknown,
+        // The driver's config has the second click (or Force Touch) off.
         Disabled,
+        // The Wellspring touchpad driver is not connected.
         DriverUnavailable,
+        // No actuator driver interface is present.
         ActuatorUnavailable,
+        // The actuator driver speaks another interface version.
+        ActuatorIncompatible,
+        // The actuator driver is there, but the touchpad driver has no open
+        // link to it (yet): a hard press would not click.
+        LinkDown,
         FeedUnavailable,
-        // Enabled and the actuator is present; the live pressure meter is not
-        // being fed (it is only streamed while the Live switch is on).
+        // On and playable; the live pressure meter is not being fed (it is
+        // only streamed while the Live switch is on).
         Idle,
-        // Enabled, actuator present, live pressure meter being fed.
+        // On and playable, live pressure meter being fed.
         Running,
     }
 
-    internal readonly record struct HapticsStatus(HapticsState State, int Pressure, int Clicks);
+    /// <summary>
+    /// What the Haptics group shows. Clicks* are the touchpad driver's own
+    /// counters since its device started (zero when it cannot report them).
+    /// </summary>
+    internal readonly record struct HapticsStatus(
+        HapticsState State,
+        int Pressure,
+        uint ClicksDelivered,
+        uint ClicksFailed);
 
     /// <summary>
     /// Companion of the second haptic click inside the control panel. The
-    /// click itself is played by the touchpad driver (it works without this
-    /// app); this class only (1) finds the actuator driver so the UI can say
-    /// whether it is installed, (2) plays the "Test click", and (3) while the
-    /// live pressure meter is visible (MeterWanted), reads the driver's live
-    /// pressure frames (shared with the Live view through
-    /// DeviceIo.SetLiveConsumer). It asks the driver for nothing otherwise.
+    /// click itself is decided AND played by the touchpad driver (it works
+    /// without this app), and the settings are ordinary driver configuration
+    /// (PointerConfig). This class only observes and assists:
+    ///   (1) status - asks the touchpad driver whether the click is switched
+    ///       on and whether its link to the actuator driver is ready
+    ///       (falling back to probing the actuator interface for drivers
+    ///       that cannot say), only while the group is visible
+    ///       (StatusWanted);
+    ///   (2) "Test click" - one click sent straight to the actuator driver;
+    ///   (3) the live pressure meter - reads the driver's live frames
+    ///       (shared with the Live view through DeviceIo.SetLiveConsumer),
+    ///       only while the meter is visible (MeterWanted).
+    /// It asks the drivers for nothing while neither is wanted, and it never
+    /// keeps the actuator open (see HapticsActuator).
     /// </summary>
     internal sealed class HapticsEngine : IDisposable
     {
         private const int PollMs = 8;
-        private const int IdleMs = 250;
+        private const int StatusMs = 250;
         private const int RetryMs = 500;
-        private const int ActuatorSearchMs = 2000;
         private const int StaleMs = 250;
+
+        // How long a status answer is reused before the drivers are asked
+        // again: the meter loop runs every PollMs, the status is not worth
+        // two IOCTLs on each of those turns.
+        private const int StatusRefreshMs = 500;
+
+        // Probing the actuator means enumerating its device interface and
+        // opening it; on a machine without the actuator driver that is asked
+        // for on every status round, so its answer is reused for longer.
+        private const int ProbeRefreshMs = 2000;
 
         private readonly DeviceIo _device;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        private readonly AutoResetEvent _wake = new AutoResetEvent(false);
         private readonly Thread _thread;
 
-        // Shared with TestClick (UI thread); guards _actuator only.
-        private readonly object _actuatorLock = new object();
-        private ActuatorHandle? _actuator;
-        private long _nextActuatorSearchMs;
+        private volatile bool _statusWanted;
+        private volatile bool _meterWanted;
 
-        // Written by Configure (UI thread), read by the worker.
-        private volatile HapticsConfig _config = new HapticsConfig { Enabled = false };
-
-        private int _state = (int)HapticsState.Disabled;
+        private int _state = (int)HapticsState.Unknown;
         private int _pressure;
-        private int _clicks;
+        private int _clicksDelivered;
+        private int _clicksFailed;
+
+        // Worker thread only.
+        private long _probeAtMs = long.MinValue;
+        private HapticsActuator.Result _probeResult = HapticsActuator.Result.NotInstalled;
 
         public HapticsEngine(DeviceIo device)
         {
@@ -68,104 +103,161 @@ namespace AmtPtpConfigGui
         public HapticsStatus Status => new HapticsStatus(
             (HapticsState)Volatile.Read(ref _state),
             Volatile.Read(ref _pressure),
-            Volatile.Read(ref _clicks));
+            unchecked((uint)Volatile.Read(ref _clicksDelivered)),
+            unchecked((uint)Volatile.Read(ref _clicksFailed)));
+
+        /// <summary>
+        /// Set by the UI while the Haptics group is visible. Only then are the
+        /// drivers asked for their state; otherwise the worker sleeps.
+        /// </summary>
+        public bool StatusWanted
+        {
+            get => _statusWanted;
+            set
+            {
+                if (_statusWanted == value)
+                    return;
+                _statusWanted = value;
+                if (value)
+                    _wake.Set();
+            }
+        }
 
         /// <summary>
         /// Set by the UI while the live pressure meter is visible. Only then
-        /// is the driver asked for live frames.
+        /// is the driver asked for live frames. Has no effect without
+        /// StatusWanted.
         /// </summary>
-        public volatile bool MeterWanted;
-
-        /// <summary>Takes effect within one poll interval.</summary>
-        public void Configure(HapticsConfig config)
+        public bool MeterWanted
         {
-            _config = config.Clamped();
+            get => _meterWanted;
+            set
+            {
+                if (_meterWanted == value)
+                    return;
+                _meterWanted = value;
+                if (value)
+                    _wake.Set();
+            }
         }
 
         /// <summary>
         /// Fires one click now, saved settings or not, so a waveform can be
-        /// judged before pressing Save. Works while the engine is disabled.
+        /// judged before pressing Save. Independent of the driver's config
+        /// and of the status loop. Blocks for the transfer: call it off the
+        /// UI thread.
         /// </summary>
-        public bool TestClick(int waveform)
-        {
-            lock (_actuatorLock)
-            {
-                if (_actuator == null)
-                    OpenActuatorUnsafe();
-                if (_actuator == null)
-                    return false;
+        public static HapticsActuator.Result TestClick(int waveform) =>
+            HapticsActuator.Click(waveform);
 
-                return ClickUnsafe(waveform);
+        /// <summary>
+        /// Maps what the drivers reported to the state shown in the UI. Pure,
+        /// so the decision table can be tested without any driver.
+        /// </summary>
+        /// <param name="connected">The touchpad driver's control device is open.</param>
+        /// <param name="pointer">Its current pointer config, or null if unreadable.</param>
+        /// <param name="link">Its haptic link info, or null if it cannot report one (older driver).</param>
+        /// <param name="probe">Lazily probes the actuator interface; only called when needed.</param>
+        internal static HapticsState Evaluate(
+            bool connected,
+            PointerConfig? pointer,
+            HapticLinkInfo? link,
+            Func<HapticsActuator.Result> probe)
+        {
+            if (!connected || pointer == null)
+                return HapticsState.DriverUnavailable;
+
+            PointerConfig cfg = pointer.Value;
+            if (cfg.ForceTouchEnabled == 0 || cfg.ForceTouchHapticEnabled == 0)
+                return HapticsState.Disabled;
+
+            if (link != null)
+            {
+                switch (link.Value.State)
+                {
+                    case HapticLinkInfo.StateReady:
+                        return HapticsState.Idle;
+                    case HapticLinkInfo.StateIncompatible:
+                        return HapticsState.ActuatorIncompatible;
+                    case HapticLinkInfo.StateClosed:
+                        return HapticsState.LinkDown;
+                }
+
+                // Absent: tell "not installed" from "installed, but the
+                // touchpad driver has not linked to it" with our own probe.
+                return probe() switch
+                {
+                    HapticsActuator.Result.Ok => HapticsState.LinkDown,
+                    HapticsActuator.Result.Incompatible => HapticsState.ActuatorIncompatible,
+                    _ => HapticsState.ActuatorUnavailable,
+                };
             }
+
+            // A touchpad driver that cannot report its link: the best
+            // available answer is whether the actuator driver is there.
+            return probe() switch
+            {
+                HapticsActuator.Result.Ok => HapticsState.Idle,
+                HapticsActuator.Result.Incompatible => HapticsState.ActuatorIncompatible,
+                _ => HapticsState.ActuatorUnavailable,
+            };
         }
 
         private void Run()
         {
             var clock = Stopwatch.StartNew();
             CancellationToken token = _cts.Token;
+            WaitHandle[] waits = { token.WaitHandle, _wake };
             uint sequence = 0;
             long lastFrameMs = 0;
+            long statusAtMs = long.MinValue;
+            HapticsState baseState = HapticsState.Unknown;
             bool liveHeld = false;
+
+            // Also right when the device is no longer connected: the call
+            // then only clears this consumer's bit, so a later reconnect does
+            // not inherit a wish nobody holds any more.
+            void ReleaseLive()
+            {
+                if (liveHeld)
+                {
+                    _device.SetLiveConsumer(DeviceIo.LiveConsumer.Haptics, false);
+                    liveHeld = false;
+                }
+            }
 
             try
             {
                 while (!token.IsCancellationRequested)
                 {
+                    if (!_statusWanted)
+                    {
+                        // Nobody is looking: give the live stream back and
+                        // sleep until the group is shown again.
+                        ReleaseLive();
+                        Publish(HapticsState.Unknown, 0);
+                        statusAtMs = long.MinValue;
+                        WaitHandle.WaitAny(waits);
+                        continue;
+                    }
+
                     long now = clock.ElapsedMilliseconds;
-                    HapticsConfig cfg = _config;
 
-                    if (!cfg.Enabled)
+                    if (statusAtMs == long.MinValue || now - statusAtMs >= StatusRefreshMs)
                     {
-                        // Nothing to do: let the driver stop assembling live
-                        // frames and give the actuator back.
-                        if (liveHeld)
-                        {
-                            _device.SetLiveConsumer(DeviceIo.LiveConsumer.Haptics, false);
-                            liveHeld = false;
-                        }
-
-                        CloseActuator();
-                        Publish(HapticsState.Disabled, 0);
-                        token.WaitHandle.WaitOne(IdleMs);
-                        continue;
+                        baseState = QueryState(now);
+                        statusAtMs = now;
                     }
 
-                    if (!_device.IsConnected)
+                    bool playable = baseState == HapticsState.Idle;
+
+                    // The meter only makes sense while a hard press can click;
+                    // otherwise do not make the driver assemble live frames.
+                    if (!playable || !_meterWanted)
                     {
-                        liveHeld = false;
-                        Publish(HapticsState.DriverUnavailable, 0);
-                        token.WaitHandle.WaitOne(RetryMs);
-                        continue;
-                    }
-
-                    // The second click itself is played by the touchpad driver
-                    // (it works without this app). All that is left here is to
-                    // tell the user whether the actuator driver is present and
-                    // to feed the live pressure meter while it is visible.
-                    if (!EnsureActuator(now))
-                    {
-                        if (liveHeld)
-                        {
-                            _device.SetLiveConsumer(DeviceIo.LiveConsumer.Haptics, false);
-                            liveHeld = false;
-                        }
-
-                        Publish(HapticsState.ActuatorUnavailable, 0);
-                        token.WaitHandle.WaitOne(RetryMs);
-                        continue;
-                    }
-
-                    // No meter wanted: do not make the driver assemble live frames.
-                    if (!MeterWanted)
-                    {
-                        if (liveHeld)
-                        {
-                            _device.SetLiveConsumer(DeviceIo.LiveConsumer.Haptics, false);
-                            liveHeld = false;
-                        }
-
-                        Publish(HapticsState.Idle, 0);
-                        token.WaitHandle.WaitOne(IdleMs);
+                        ReleaseLive();
+                        Publish(baseState, 0);
+                        WaitHandle.WaitAny(waits, playable ? StatusMs : RetryMs);
                         continue;
                     }
 
@@ -176,7 +268,7 @@ namespace AmtPtpConfigGui
                         if (!_device.SetLiveConsumer(DeviceIo.LiveConsumer.Haptics, true))
                         {
                             Publish(HapticsState.FeedUnavailable, 0);
-                            token.WaitHandle.WaitOne(RetryMs);
+                            WaitHandle.WaitAny(waits, RetryMs);
                             continue;
                         }
 
@@ -187,21 +279,22 @@ namespace AmtPtpConfigGui
 
                     if (!_device.TryGetLiveFrame(out LiveFrame frame))
                     {
-                        liveHeld = false;
+                        // Drop our share properly (not just the local flag):
+                        // a consumer bit left set would keep the driver
+                        // streaming for nobody once the Live view lets go.
+                        ReleaseLive();
                         Publish(HapticsState.FeedUnavailable, 0);
-                        token.WaitHandle.WaitOne(RetryMs);
+                        statusAtMs = long.MinValue;     // find out why right away
+                        WaitHandle.WaitAny(waits, RetryMs);
                         continue;
                     }
 
                     if (frame.Sequence == sequence)
                     {
-                        // No new frame. After a quiet spell forget any
-                        // half-seen press so stale samples cannot combine
-                        // with fresh ones.
+                        // No new frame. After a quiet spell forget the last
+                        // sample so a stale pressure does not stay on screen.
                         if (now - lastFrameMs > StaleMs)
-                        {
-                            Volatile.Write(ref _pressure, 0);
-                        }
+                            Publish(HapticsState.Running, 0);
 
                         token.WaitHandle.WaitOne(PollMs);
                         continue;
@@ -210,12 +303,14 @@ namespace AmtPtpConfigGui
                     sequence = frame.Sequence;
                     lastFrameMs = now;
 
-                    bool valid = frame.ContactCount == 1
+                    bool valid = frame.Contacts != null
+                        && frame.Contacts.Length > 0
+                        && frame.ContactCount == 1
                         && frame.RawContactCount == 1
                         && frame.LargePalmBlanked == 0
                         && frame.Contacts[0].Confident != 0
                         && frame.Contacts[0].PalmSuspect == 0;
-                    int pressure = valid ? frame.Contacts[0].Pressure : 0;
+                    int pressure = valid ? frame.Contacts![0].Pressure : 0;
 
                     Publish(HapticsState.Running, pressure);
 
@@ -224,10 +319,50 @@ namespace AmtPtpConfigGui
             }
             finally
             {
-                if (liveHeld)
-                    _device.SetLiveConsumer(DeviceIo.LiveConsumer.Haptics, false);
-                CloseActuator();
+                ReleaseLive();
             }
+        }
+
+        // One round of questions to the drivers: two small IOCTLs to the
+        // touchpad driver and, only when its answer leaves it open, a (cached)
+        // probe of the actuator driver.
+        private HapticsState QueryState(long now)
+        {
+            bool connected = _device.IsConnected;
+
+            PointerConfig? pointer = null;
+            HapticLinkInfo? link = null;
+
+            if (connected)
+            {
+                if (_device.TryGetPointerConfig(out PointerConfig cfg))
+                    pointer = cfg;
+
+                if (_device.TryGetHapticLinkInfo(out HapticLinkInfo info))
+                {
+                    link = info;
+                    Volatile.Write(ref _clicksDelivered, unchecked((int)info.ClicksDelivered));
+                    Volatile.Write(ref _clicksFailed, unchecked((int)info.ClicksFailed));
+                }
+                else
+                {
+                    Volatile.Write(ref _clicksDelivered, 0);
+                    Volatile.Write(ref _clicksFailed, 0);
+                }
+            }
+
+            return Evaluate(connected, pointer, link, () => ProbeCached(now));
+        }
+
+        private HapticsActuator.Result ProbeCached(long now)
+        {
+            if (_probeAtMs == long.MinValue || now - _probeAtMs >= ProbeRefreshMs)
+            {
+                _probeResult = HapticsActuator.Probe(out _);
+                _probeAtMs = now;
+            }
+
+            return _probeResult;
         }
 
         private void Publish(HapticsState state, int pressure)
@@ -236,65 +371,18 @@ namespace AmtPtpConfigGui
             Volatile.Write(ref _pressure, pressure);
         }
 
-        private bool EnsureActuator(long now)
-        {
-            lock (_actuatorLock)
-            {
-                if (_actuator != null)
-                    return true;
-
-                if (now < _nextActuatorSearchMs)
-                    return false;
-
-                OpenActuatorUnsafe();
-                if (_actuator == null)
-                    _nextActuatorSearchMs = now + ActuatorSearchMs;
-                return _actuator != null;
-            }
-        }
-
-        private void OpenActuatorUnsafe()
-        {
-            if (HapticsActuator.Find(out string? path) == HapticsActuator.FindResult.Found && path != null)
-                _actuator = HapticsActuator.Open(path);
-        }
-
-        private void CloseActuator()
-        {
-            lock (_actuatorLock)
-            {
-                _actuator?.Dispose();
-                _actuator = null;
-            }
-        }
-
-        // Returns true when a click was actually delivered. The driver's own
-        // cooldown is flow control; any other failure means the transport is
-        // gone or wedged, so it is dropped and found again later.
-        private bool ClickUnsafe(int waveform)
-        {
-            int error = HapticsActuator.Click(_actuator!, waveform);
-            if (error == 0)
-                return true;
-
-            if (error != HapticsActuator.ErrorBusy)
-            {
-                _actuator!.Dispose();
-                _actuator = null;
-            }
-
-            return false;
-        }
-
         public void Dispose()
         {
             _cts.Cancel();
 
-            // Disposing the token source under a worker that is still waiting
-            // on its handle would throw on that thread; if it did not stop in
-            // time, leave the source to the finalizer instead.
+            // Disposing the wait handles under a worker that is still waiting
+            // on them would throw on that thread; if it did not stop in time,
+            // leave them to the finalizer instead.
             if (_thread.Join(1000))
+            {
                 _cts.Dispose();
+                _wake.Dispose();
+            }
         }
     }
 }
