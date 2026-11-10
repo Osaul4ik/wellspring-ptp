@@ -383,21 +383,40 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
             pCtx->ForceMotionDragging = FALSE;
         }
         if (pCtx->ForceMotionHeld) {
+            // BUG FIX (UP off the frozen point): the tracked contact's UP
+            // report is translated too. Matching only TipSwitch=1 entries
+            // left the final UP at the raw sensor position while every MOVE
+            // before it carried the frozen/translated one, so the lift
+            // itself showed up as a jump of the whole accumulated offset.
             for (i = 0; i < Report.ContactCount; ++i) {
-                if (Report.Contacts[i].ContactID == pCtx->ForceMotionContactId &&
-                    Report.Contacts[i].TipSwitch) {
+                if (Report.Contacts[i].ContactID == pCtx->ForceMotionContactId) {
                     tracked = &Report.Contacts[i];
                     break;
                 }
             }
-        } else if (buttonSnapshot && Report.ContactCount == 1 &&
-                   Report.Contacts[0].TipSwitch) {
-            tracked = &Report.Contacts[0];
-            pCtx->ForceMotionHeld = TRUE;
-            pCtx->ForceMotionDragging = FALSE;
-            pCtx->ForceMotionContactId = tracked->ContactID;
-            pCtx->ForceMotionX = tracked->X;
-            pCtx->ForceMotionY = tracked->Y;
+        } else if (buttonSnapshot) {
+            // BUG FIX (freeze armed a frame late): count fingers that are
+            // DOWN, not report entries. The click edge rebinds the finger's
+            // identity (Phase A.5 in PTPCore), so the edge frame carries the
+            // old ID's UP next to the new ID's DOWN - ContactCount == 2 - and
+            // the freeze only armed on the next frame, after the press ramp
+            // had already moved the centroid.
+            PTP_CONTACT* down = NULL;
+            ULONG downCount = 0;
+            for (i = 0; i < Report.ContactCount; ++i) {
+                if (Report.Contacts[i].TipSwitch) {
+                    down = &Report.Contacts[i];
+                    downCount++;
+                }
+            }
+            if (downCount == 1) {
+                tracked = down;
+                pCtx->ForceMotionHeld = TRUE;
+                pCtx->ForceMotionDragging = FALSE;
+                pCtx->ForceMotionContactId = tracked->ContactID;
+                pCtx->ForceMotionX = tracked->X;
+                pCtx->ForceMotionY = tracked->Y;
+            }
         }
 
         if (tracked != NULL && pCtx->ForceMotionHeld) {
@@ -413,12 +432,19 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
                 tracked->X = pCtx->ForceMotionX;
                 tracked->Y = pCtx->ForceMotionY;
             } else {
+                // Clamp to the pad extent the HID descriptor declares
+                // (same normalized 0..max-min space PTPCore emits), not
+                // to 65535: the offset can push past the logical maximum.
+                const LONG padMaxX =
+                    (LONG)(pCtx->DeviceInfo->x.max - pCtx->DeviceInfo->x.min);
+                const LONG padMaxY =
+                    (LONG)(pCtx->DeviceInfo->y.max - pCtx->DeviceInfo->y.min);
                 LONG x = (LONG)pCtx->ForceMotionX +
                     (LONG)tracked->X - (LONG)pCtx->ForceMotionResumeX;
                 LONG y = (LONG)pCtx->ForceMotionY +
                     (LONG)tracked->Y - (LONG)pCtx->ForceMotionResumeY;
-                tracked->X = (USHORT)((x < 0) ? 0 : (x > 65535 ? 65535 : x));
-                tracked->Y = (USHORT)((y < 0) ? 0 : (y > 65535 ? 65535 : y));
+                tracked->X = (USHORT)((x < 0) ? 0 : (x > padMaxX ? padMaxX : x));
+                tracked->Y = (USHORT)((y < 0) ? 0 : (y > padMaxY ? padMaxY : y));
             }
         } else if (!buttonSnapshot &&
                    (Report.ContactCount == 0 || !pCtx->ForceMotionHeld)) {

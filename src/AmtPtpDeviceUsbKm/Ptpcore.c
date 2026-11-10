@@ -168,11 +168,19 @@ AmtCoreEmitContact(
 // rebinds every ID: N UPs + N DOWNs > one frame), and an UP for such a
 // never-announced ID is a stray event for a contact that, as far as
 // Windows is concerned, never existed.
+//
+// BUG FIX (palm UP with Confidence=1): PalmFrozen must be the contact's
+// state BEFORE it was killed/rebound. A contact Windows has already seen
+// with Confidence=0 (frozen under a palm / in the edge zone) must keep
+// Confidence=0 on its UP too - the PTP spec forbids a 0->1 transition for
+// one contact, and an UP that suddenly claims "intentional finger" lets
+// Windows read the palm's lift as a tap/click-release.
 static VOID
 AmtCoreEmitLift(
     _Inout_ PDEVICE_CONTEXT pCtx,
     _Inout_ PTP_CORE_FRAME* OutResult,
     _In_    BOOLEAN         Announced,
+    _In_    BOOLEAN         PalmFrozen,
     _In_    ULONG           ContactID,
     _In_    USHORT          X,
     _In_    USHORT          Y
@@ -181,7 +189,8 @@ AmtCoreEmitLift(
     if (!Announced)
         return;
 
-    (VOID)AmtCoreEmitContact(pCtx, OutResult, ContactID, X, Y, CONTACT_PHASE_UP, TRUE);
+    (VOID)AmtCoreEmitContact(pCtx, OutResult, ContactID, X, Y, CONTACT_PHASE_UP,
+                             (BOOLEAN)!PalmFrozen);
 }
 
 // Avoid emitting duplicate contact IDs in one frame.
@@ -546,15 +555,20 @@ PTPCore_ProcessFrame(
         }
 
         ULONG  oldId; USHORT oldX, oldY;
-        const BOOLEAN announced = ac->Announced; // before the slot is zeroed
+        const BOOLEAN announced  = ac->Announced;  // before the slot is zeroed
+        const BOOLEAN palmFrozen = ac->PalmFrozen; // ditto
 
-        if (ac->WasInGesture) {
+        if (ac->WasInGesture || palmFrozen) {
             // Gesture-tainted: lift immediately. The previous fake-MOVE-then-UP
             // deferral delayed the real UP by up to 4 frames (~33ms @ 120Hz),
             // breaking 3-finger swipe completion and 2-finger soft taps.
             // Not recorded in RecentLifts.
+            //
+            // A contact Windows saw as a palm (PalmFrozen) is not recorded
+            // either: its lift is not a finger lift and must not seed the
+            // retap smoothing of the next real tap near it.
             AmtContactKill(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
-            AmtCoreEmitLift(pCtx, OutResult, announced, oldId, oldX, oldY);
+            AmtCoreEmitLift(pCtx, OutResult, announced, palmFrozen, oldId, oldX, oldY);
 
         } else {
             // Solo contact: kill immediately. palmSuppressedFrame is always
@@ -566,7 +580,7 @@ PTPCore_ProcessFrame(
             USHORT liftY = ac->ReportY;
             AmtContactKill(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
             AmtRecentLiftRecord(&pCtx->RecentLifts, NowQpc, liftX, liftY, oldX, oldY);
-            AmtCoreEmitLift(pCtx, OutResult, announced, oldId, oldX, oldY);
+            AmtCoreEmitLift(pCtx, OutResult, announced, FALSE, oldId, oldX, oldY);
         }
     }
 
@@ -608,11 +622,12 @@ PTPCore_ProcessFrame(
         // this frame's own candidate set) is the same signal Phase C uses for
         // its taint decision (see shouldTaint); using it here too keeps the
         // two decisions consistent instead of one reading stale state.
-        const BOOLEAN announcedOld = pCtx->ActiveContacts[p].Announced;
+        const BOOLEAN announcedOld   = pCtx->ActiveContacts[p].Announced;
+        const BOOLEAN palmFrozenOld  = pCtx->ActiveContacts[p].PalmFrozen;
 
-        if (pCtx->ActiveContacts[p].WasInGesture || gestureThisFrame) {
+        if (pCtx->ActiveContacts[p].WasInGesture || gestureThisFrame || palmFrozenOld) {
             AmtContactKill(pCtx->ActiveContacts, p, &oldId, &oldX, &oldY);
-            // Gesture lift: not recorded in RecentLifts.
+            // Gesture (or palm) lift: not recorded in RecentLifts.
         } else {
             USHORT liftX = pCtx->ActiveContacts[p].ReportX;
             USHORT liftY = pCtx->ActiveContacts[p].ReportY;
@@ -621,7 +636,7 @@ PTPCore_ProcessFrame(
             AmtRecentLiftRecord(&pCtx->RecentLifts, NowQpc, liftX, liftY, oldX, oldY);
         }
 
-        AmtCoreEmitLift(pCtx, OutResult, announcedOld, oldId, oldX, oldY);
+        AmtCoreEmitLift(pCtx, OutResult, announcedOld, palmFrozenOld, oldId, oldX, oldY);
 
         matchResult.CorrespondingPoolIndex[ci] = MATCH_NO_CORRESPONDENCE;
     }
@@ -640,13 +655,41 @@ PTPCore_ProcessFrame(
     // are skipped.
     BOOLEAN rebindThisFrame[MAX_CONTACTS] = { 0 };
 
+    // BUG FIX (multi-finger click split across frames): the click-edge
+    // rebind costs every live contact TWO report entries (UP old + DOWN new).
+    // With 3+ fingers that no longer fits in one PTP report, so some DOWNs
+    // spilled into the overflow queue and the click frame reached Windows
+    // with fewer fingers down than were actually pressing - a 3-finger click
+    // was classified as a 2-finger (right) click, etc. The rebind only exists
+    // to stop Windows snapping a single-finger click to the cursor, so when
+    // the doubled report would not fit it is skipped: the click then goes out
+    // with every contact under its existing identity, all in this frame.
+    // PalmFrozen rebinds are mandatory and are not affected.
+    BOOLEAN clickRebind = buttonClickEdge;
+    if (clickRebind) {
+        UCHAR liveMatched = 0, pendingBirths = 0;
+        for (UCHAR ci = 0; ci < candidates.Count; ci++) {
+            const MATCH_CANDIDATE* cc = &candidates.Candidates[ci];
+            if (cc->PalmLocal) continue;
+            if (matchResult.CorrespondingPoolIndex[ci] == MATCH_NO_CORRESPONDENCE) {
+                if (!AmtCoreBirthGated(pCtx, cc))
+                    pendingBirths++;
+            } else {
+                liveMatched++;
+            }
+        }
+        if ((ULONG)OutResult->ContactCount + 2u * liveMatched + pendingBirths >
+            PTP_MAX_CONTACT_POINTS)
+            clickRebind = FALSE;
+    }
+
     for (UCHAR ci = 0; ci < candidates.Count; ci++) {
         if (candidates.Candidates[ci].PalmLocal) continue;
 
         size_t p = matchResult.CorrespondingPoolIndex[ci];
         if (p == MATCH_NO_CORRESPONDENCE) continue;
         PACTIVE_CONTACT ac = &pCtx->ActiveContacts[p];
-        if (!buttonClickEdge && !ac->PalmFrozen) continue;
+        if (!clickRebind && !ac->PalmFrozen) continue;
         if (ac->LastSeenQpc == 0) continue; // born this frame
 
         // UP for the old identity goes where Windows last saw it.
@@ -654,12 +697,27 @@ PTPCore_ProcessFrame(
         USHORT oldY = ac->EmitY;
 
         ULONG oldId;
-        const BOOLEAN announcedOld = ac->Announced; // rebind clears it
+        const BOOLEAN announcedOld  = ac->Announced;  // rebind clears it
+        const BOOLEAN palmFrozenOld = ac->PalmFrozen; // ditto
         AmtContactRebindIdentity(pCtx->ActiveContacts, p, &pCtx->NextContactId, &oldId);
-        AmtCoreEmitLift(pCtx, OutResult, announcedOld, oldId, oldX, oldY);
+        AmtCoreEmitLift(pCtx, OutResult, announcedOld, palmFrozenOld, oldId, oldX, oldY);
         // Deliberately NOT AmtRecentLiftRecord'd - not a real lift and
         // must not seed retap-smoothing for unrelated future taps.
         // (Rebind also clears PalmFrozen.)
+
+        // BUG FIX (jump after a palm/edge freeze): while frozen the entry
+        // was not updated, so its smoothed/emitted position is wherever the
+        // finger was when the freeze began - up to the continuation delta
+        // away from where it is now. Continuing the EMA and the emitted
+        // integrator from there put the new identity's DOWN at the stale
+        // spot and then slid it across the pad over the next frames (a
+        // confident phantom swipe/drag). Start the new identity at the
+        // finger's current position, like a fresh birth. A click-edge
+        // rebind keeps its state: that finger was tracked all along.
+        if (palmFrozenOld) {
+            AmtContactReseedPosition(ac, candidates.Candidates[ci].X,
+                                     candidates.Candidates[ci].Y);
+        }
 
         rebindThisFrame[p] = TRUE;
 
@@ -753,6 +811,11 @@ PTPCore_ProcessFrame(
     BOOLEAN scrollMode = FALSE;
     if (!gestureThisFrame) {
         pCtx->ScrollModeLatched = FALSE;
+        // The multi-contact touch is over: origins captured for it must not
+        // be reused when a second finger lands again later next to a contact
+        // that stayed down (that contact's cursor travel in between would
+        // count as "moved" immediately).
+        RtlZeroMemory(pCtx->ScrollModeOriginId, sizeof(pCtx->ScrollModeOriginId));
     } else if (aliveCount >= AMT_SCROLL_MODE_ALWAYS_CONTACTS ||
                pCtx->ScrollModeLatched) {
         scrollMode = TRUE;
@@ -764,16 +827,33 @@ PTPCore_ProcessFrame(
         if (pCtx->ScrollConfig.Deadzone > moveUnits)
             moveUnits = pCtx->ScrollConfig.Deadzone;
 
+        // BUG FIX (slow 2-finger scroll stuck in cursor mode): movement is
+        // measured from the contact's position when this 2-contact touch
+        // began, not from the deadzone anchor. The anchor is re-committed
+        // every frame it passes the cursor deadzone, so with a 0/1-unit slow
+        // deadzone a slow scroll (~1 unit/frame) never reached the threshold
+        // per frame and was emitted for its whole length at cursor scale
+        // (1.0x) instead of the scroll scale; it also required both fingers
+        // to cross in the same frame. Distance from a fixed origin
+        // accumulates. See AMT_SCROLL_MODE_MOVE_MIN_UNITS.
         UCHAR movingCount = 0;
         for (UCHAR mc = 0; mc < candidates.Count; mc++) {
             if (candidates.Candidates[mc].PalmLocal) continue;
             size_t mp = matchResult.CorrespondingPoolIndex[mc];
             if (mp == MATCH_NO_CORRESPONDENCE) continue;
             const ACTIVE_CONTACT* acM = &pCtx->ActiveContacts[mp];
+
+            if (pCtx->ScrollModeOriginId[mp] != acM->ContactID) {
+                // First 2-contact frame for this identity: capture origin.
+                pCtx->ScrollModeOriginId[mp] = acM->ContactID;
+                pCtx->ScrollModeOriginX[mp]  = candidates.Candidates[mc].X;
+                pCtx->ScrollModeOriginY[mp]  = candidates.Candidates[mc].Y;
+                continue;
+            }
             if (acM->LastSeenQpc == 0 || acM->PendingFirstSample) continue;
 
-            INT mdx = (INT)candidates.Candidates[mc].X - (INT)acM->HystX;
-            INT mdy = (INT)candidates.Candidates[mc].Y - (INT)acM->HystY;
+            INT mdx = (INT)candidates.Candidates[mc].X - (INT)pCtx->ScrollModeOriginX[mp];
+            INT mdy = (INT)candidates.Candidates[mc].Y - (INT)pCtx->ScrollModeOriginY[mp];
             if (mdx < 0) mdx = -mdx;
             if (mdy < 0) mdy = -mdy;
             if ((ULONG)mdx >= moveUnits || (ULONG)mdy >= moveUnits)

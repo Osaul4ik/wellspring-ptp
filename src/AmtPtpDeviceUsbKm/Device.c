@@ -1704,6 +1704,9 @@ AmtPtpEvtDeviceD0Entry(
     // outlive the contact pool it was deferring.
     pDeviceContext->GestureSettleUntilQpc = 0;
     pDeviceContext->ScrollModeLatched     = FALSE;
+    // NextContactId restarts at 0, so stale origins must not match new IDs.
+    RtlZeroMemory(pDeviceContext->ScrollModeOriginId,
+                  sizeof(pDeviceContext->ScrollModeOriginId));
     // A palm latch from the previous power session must not survive the
     // reset of the contact pool it was suppressing.
     pDeviceContext->PalmDetected         = FALSE;

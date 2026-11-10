@@ -119,6 +119,12 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
     // never loses sub-unit motion (e.g. 0.36x scroll at slow speed).
     ULONG CarryX;
     ULONG CarryY;
+    // Scroll step low-pass state, in Q(AMT_SCROLL_FILTER_SHIFT) fixed point
+    // (NOT whole sensor units). Integer state made the rounded EMA stick at a
+    // non-zero step once smoothing was >= 50%: v*(1-alpha) rounded straight
+    // back to v, so a +-1..5 unit step kept being emitted every frame on an
+    // axis the finger no longer moved along (diagonal drift while scrolling
+    // straight, scroll that never slowed down). The fractional state decays.
     LONG ScrollFilteredX;
     LONG ScrollFilteredY;
 
@@ -202,9 +208,22 @@ typedef struct DECLSPEC_ALIGN(64) _ACTIVE_CONTACT
 // second one that is merely resting on the pad keeps cursor feel (cursor
 // speed, cursor deadzone/smoothing) instead of being re-scaled as a scroll.
 // A contact counts as moving once it is this many sensor units (at least)
-// away from its deadzone anchor; the larger of the cursor/scroll deadzone
+// away from its origin (see below); the larger of the cursor/scroll deadzone
 // config wins if it is bigger.
-#define AMT_SCROLL_MODE_MOVE_MIN_UNITS 2
+//
+// The distance is measured from where the contact was when the 2-contact
+// touch began (DEVICE_CONTEXT::ScrollModeOrigin*), NOT from the per-frame
+// deadzone anchor. The anchor is re-committed every frame it passes the
+// cursor deadzone, so whether the two fingers ever showed a per-frame
+// distance >= the threshold depended on the deadzone config and on both
+// fingers crossing it in the SAME frame: with the slow cursor deadzone set
+// to 0/1 a slow two-finger scroll (~1 unit/frame) stayed in cursor mode
+// for its whole length (1.0x instead of the scroll scale), and fingers
+// that moved out of phase could miss each other indefinitely. Distance
+// from a fixed origin accumulates and does not need the frames to line up.
+// The value only has to clear resting-finger sensor noise (the old anchor
+// test used 2 units against the 4-unit slow deadzone, i.e. about the same).
+#define AMT_SCROLL_MODE_MOVE_MIN_UNITS 4
 // From this many contacts the motion is always scroll/gesture mode.
 #define AMT_SCROLL_MODE_ALWAYS_CONTACTS 3
 
@@ -230,6 +249,21 @@ AmtContactBirth(
     _In_    USHORT          x,
     _In_    USHORT          y,
     _In_    USHORT          slotHint
+);
+
+// Fractional bits of ACTIVE_CONTACT::ScrollFilteredX/Y.
+#define AMT_SCROLL_FILTER_SHIFT 8
+
+// Re-seed an ACTIVE contact's position state at (x, y) exactly like a fresh
+// (non-retap) birth, keeping its pool slot, identity and gesture taint. Used
+// after a palm/edge freeze: the finger may have moved far from the frozen
+// position, and continuing the EMA/integrators from there made the new
+// identity's DOWN land at the stale spot and then slide across the pad.
+VOID
+AmtContactReseedPosition(
+    _Inout_ PACTIVE_CONTACT Contact,
+    _In_    USHORT          x,
+    _In_    USHORT          y
 );
 
 // Rebind an active contact to a new identity without resetting smoothing state.

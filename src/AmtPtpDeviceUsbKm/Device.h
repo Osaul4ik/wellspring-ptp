@@ -502,6 +502,15 @@ typedef struct _DEVICE_CONTEXT
     // AMT_SCROLL_MODE_MOVE_MIN_UNITS in Activecontact.h.
     BOOLEAN       ScrollModeLatched;
 
+    // Per pool slot: where the contact was when the current 2-contact touch
+    // began (sensor domain), and which ContactID that origin belongs to - a
+    // mismatch (new identity in the slot, or 0 after D0Entry) re-captures
+    // the origin. The "both fingers moved" test for ScrollModeLatched is
+    // measured from here, not from the per-frame deadzone anchor.
+    ULONG         ScrollModeOriginId[MAX_CONTACTS];
+    USHORT        ScrollModeOriginX[MAX_CONTACTS];
+    USHORT        ScrollModeOriginY[MAX_CONTACTS];
+
     // MICRO-OPT: Q16 fixed-point form of (10000 / PerfFrequency), computed
     // once at D0Entry instead of a 64-bit divide (and a PerfFrequency>0
     // branch) on every single USB interrupt completion (the hottest

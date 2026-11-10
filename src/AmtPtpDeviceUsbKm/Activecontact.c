@@ -33,6 +33,18 @@ AmtMulQ32Round(_In_ INT Value, _In_ LONGLONG CoeffQ32)
     return AmtQ32ProductToIntRound((LONGLONG)Value * CoeffQ32);
 }
 
+// Round-half-away-from-zero of a Q(AMT_SCROLL_FILTER_SHIFT) value to an integer.
+static inline INT
+AmtQ8ToIntRound(_In_ LONG ValueQ8)
+{
+    const LONG half = 1L << (AMT_SCROLL_FILTER_SHIFT - 1);
+
+    if (ValueQ8 >= 0)
+        return (INT)((ValueQ8 + half) >> AMT_SCROLL_FILTER_SHIFT);
+
+    return -(INT)((-ValueQ8 + half) >> AMT_SCROLL_FILTER_SHIFT);
+}
+
 // Lower smoothing reduces slow-speed jitter.
 
 // Continuous alpha endpoints and scroll scale coefficients are supplied by
@@ -335,6 +347,35 @@ AmtContactKill(
     RtlZeroMemory(c, sizeof(ACTIVE_CONTACT));
 }
 
+VOID
+AmtContactReseedPosition(
+    _Inout_ PACTIVE_CONTACT Contact,
+    _In_    USHORT          x,
+    _In_    USHORT          y
+)
+{
+#if DBG
+    NT_ASSERT(Contact->State == CONTACT_ACTIVE);
+#endif
+
+    // Same position state AmtContactBirthCommon gives a fresh, non-retap
+    // birth: the first AmtContactUpdate then seeds the deadzone baseline at
+    // the candidate and emits it with a zero delta.
+    Contact->ReportX            = x;
+    Contact->ReportY            = y;
+    Contact->HystX              = x;
+    Contact->HystY              = y;
+    Contact->EmitX              = x;
+    Contact->EmitY              = y;
+    Contact->PendingFirstSample = TRUE;
+    Contact->RetapSeeded        = FALSE;
+    Contact->CarryX             = 0;
+    Contact->CarryY             = 0;
+    Contact->ScrollFilteredX    = 0;
+    Contact->ScrollFilteredY    = 0;
+    Contact->HystAgeTicks       = 0;
+}
+
 // Synthetic rebirth keeps smoothing state while swapping the contact ID.
 VOID
 AmtContactRebindIdentity(
@@ -487,17 +528,27 @@ AmtContactCommitSample(
 
             if (ScrollRuntime->SmoothingAlphaQ32 != AMT_RUNTIME_FIXED_ONE) {
                 // Smooth the emitted per-frame step (a velocity filter).
+                //
+                // BUG FIX (sticky step): the filter state is kept with
+                // AMT_SCROLL_FILTER_SHIFT fractional bits. With whole-unit
+                // state, round(v * (1 - alpha)) == v for every small v once
+                // alpha <= 0.5 (smoothing >= 50%), so a +-1..5 unit step was
+                // emitted forever on an axis the finger had stopped moving
+                // along. Only the OUTPUT is rounded to whole units now.
                 LONGLONG alphaQ32 = ScrollRuntime->SmoothingAlphaQ32;
                 LONGLONG prevQ32 = AMT_RUNTIME_FIXED_ONE - alphaQ32;
-                LONGLONG mixX = (LONGLONG)scaledDx * alphaQ32 +
+                LONGLONG mixX = ((LONGLONG)scaledDx * (1LL << AMT_SCROLL_FILTER_SHIFT)) * alphaQ32 +
                                 (LONGLONG)Contact->ScrollFilteredX * prevQ32;
-                LONGLONG mixY = (LONGLONG)scaledDy * alphaQ32 +
+                LONGLONG mixY = ((LONGLONG)scaledDy * (1LL << AMT_SCROLL_FILTER_SHIFT)) * alphaQ32 +
                                 (LONGLONG)Contact->ScrollFilteredY * prevQ32;
-                scaledDx = AmtQ32ProductToIntRound(mixX);
-                scaledDy = AmtQ32ProductToIntRound(mixY);
+                Contact->ScrollFilteredX = AmtQ32ProductToIntRound(mixX);
+                Contact->ScrollFilteredY = AmtQ32ProductToIntRound(mixY);
+                scaledDx = AmtQ8ToIntRound(Contact->ScrollFilteredX);
+                scaledDy = AmtQ8ToIntRound(Contact->ScrollFilteredY);
+            } else {
+                Contact->ScrollFilteredX = (LONG)scaledDx * (1 << AMT_SCROLL_FILTER_SHIFT);
+                Contact->ScrollFilteredY = (LONG)scaledDy * (1 << AMT_SCROLL_FILTER_SHIFT);
             }
-            Contact->ScrollFilteredX = scaledDx;
-            Contact->ScrollFilteredY = scaledDy;
 
             stepX = scaledDx;
             stepY = scaledDy;
@@ -701,6 +752,18 @@ AmtContactUpdate(
         if (age > windowTicks)
             age = windowTicks;
         Contact->HystAgeTicks = (ULONG)age;
+
+        // BUG FIX (stale scroll velocity): the scroll step filter only runs
+        // on committed samples, so when the fingers stop (deadzone holds)
+        // its last step stayed in ScrollFilteredX/Y. The next scroll -
+        // possibly in the opposite direction, after a long pause - started
+        // by blending in that old step: a small jerk the wrong way. Once
+        // the anchor is stale (no commit for a whole velocity window) the
+        // fingers have stopped, so the filter restarts from rest.
+        if (age >= windowTicks) {
+            Contact->ScrollFilteredX = 0;
+            Contact->ScrollFilteredY = 0;
+        }
     }
 
     // Gesture-taint expiry: a contact that has been the only finger down
